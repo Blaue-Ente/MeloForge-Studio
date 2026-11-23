@@ -1,4 +1,5 @@
 from functools import lru_cache
+import os
 from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -42,10 +43,30 @@ class Settings(BaseSettings):
     novita_video_max_seconds: int = 8
     primary_cloud_provider: str = "openrouter"
 
+    # ACE-Step may run locally or behind a private endpoint managed by the user.
+    ace_step_enabled: bool = False
+    ace_step_base_url: str = "http://127.0.0.1:8001"
+    ace_step_api_key: str = ""
+    ace_step_model: str = "acestep-v15-turbo"
+    ace_step_cost_per_second_usd: float = 0.0
+
     def origins(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
 
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    env_path = os.environ.get("MELOFORGE_ENV_FILE")
+    settings = Settings(_env_file=env_path) if env_path else Settings()
+    try:
+        from app.services.secret_store import read_secret
+
+        secret_fields = {"openrouter": "openrouter_api_key", "novita": "novita_api_key", "nvidia": "nvidia_api_key", "huggingface": "hf_token", "ace_step": "ace_step_api_key"}
+        for provider, field_name in secret_fields.items():
+            secret = read_secret(provider)
+            if secret:
+                setattr(settings, field_name, secret)
+    except (OSError, RuntimeError):
+        # Environment variables remain available for development and non-Windows use.
+        pass
+    return settings

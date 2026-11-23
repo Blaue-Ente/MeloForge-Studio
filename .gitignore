@@ -12,6 +12,11 @@ dist/
 .vite/
 *.tsbuildinfo
 *.egg-info/
+backend/server-live-test*.log
+build/
+dist/
+release/
+*.spec
 backend/data/
 outputs/
 cache/

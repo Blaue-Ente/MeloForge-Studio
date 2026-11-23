@@ -45,6 +45,9 @@ def public_provider_status(settings: Settings) -> list[dict[str, Any]]:
             "configured": bool(spec.api_key and spec.model) if spec.kind == "cloud" else bool(settings.local_llm_enabled and spec.model),
             "model": spec.model or None,
             "pricing_configured": spec.kind == "local" or (spec.input_usd_per_1m > 0 and spec.output_usd_per_1m > 0),
+            "input_usd_per_1m": spec.input_usd_per_1m,
+            "output_usd_per_1m": spec.output_usd_per_1m,
+            "video_cost_per_second_usd": settings.novita_video_cost_per_second_usd if key == "novita" else None,
             "kind": spec.kind,
         }
         for key, spec in specs.items()

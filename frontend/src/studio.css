@@ -1,0 +1,26 @@
+.video-label{display:block;color:#c8d5e4;font-size:11px;font-weight:700;margin-bottom:16px}
+.video-prompt{display:block;width:100%;min-height:142px;resize:vertical;margin-top:8px;border:1px solid #2b4054;background:#09131e;color:#edf4fb;border-radius:9px;padding:11px;outline:none;font:inherit;font-weight:400;line-height:1.55}
+.video-prompt:focus,.video-options select:focus{border-color:#70c4e3}
+.video-options label{display:block;color:#c8d5e4;font-size:10px;font-weight:700}
+.video-options select{display:block;width:100%;margin-top:8px;border:1px solid #2b4054;background:#09131e;color:#edf4fb;border-radius:9px;padding:10px;outline:none}
+.job-card{margin-top:16px;padding:14px;border:1px solid #31506a;border-radius:11px;background:linear-gradient(145deg,#101d2b,#0a131e)}
+.job-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.job-head strong{font:700 18px Manrope;color:#9bdcf1;font-variant-numeric:tabular-nums}
+.job-card>p{font-size:10px;line-height:1.55;color:#9aacbf}
+.job-state{display:inline-flex;padding:6px 9px;border-radius:30px;background:#263343;color:#c2d0df;font-size:9px}
+.job-state.awaiting_confirmation{background:#3b3020;color:#f1ca8d}
+.job-state.running,.job-state.queued{background:#142e40;color:#9bd8ee}
+.job-state.completed{background:#15362d;color:#9de1bf}
+.job-state.failed{background:#3a2020;color:#ffb2a5}
+.error-text{color:#ffb2a5}
+.generated-video{display:block;width:100%;max-height:380px;margin-top:12px;border-radius:9px;background:#05080c}
+.generated-audio{display:block;width:100%;margin-top:14px;filter:saturate(.8)}
+.composer .lyrics-input{min-height:175px;font-family:inherit;white-space:pre-wrap}
+.lyrics-result{margin-top:12px;border-top:1px solid #233649;padding-top:10px;color:#b9c9d9;font-size:10px}
+.lyrics-result summary{cursor:pointer;color:#9bdcf1;font-weight:700}
+.lyrics-result pre{max-height:320px;overflow:auto;white-space:pre-wrap;font:11px/1.65 'DM Sans',sans-serif;color:#d8e2ed;background:#09131e;border-radius:8px;padding:12px}
+.assembly-card{border-color:#356078;background:linear-gradient(145deg,#122432,#0b1520)}.assembly-links{display:grid;gap:9px;margin-top:12px}.assembly-links .primary-button{display:flex;align-items:center;justify-content:center;margin:0;text-align:center;text-decoration:none}.text-download{display:block;padding:10px;border:1px solid #355068;border-radius:8px;color:#a9dced;text-align:center;font-size:11px;font-weight:700;text-decoration:none}.text-download:hover{background:#142638}
+@media(max-width:760px){.video-flow{padding:18px}.job-card{padding:12px}}
+.composer select{display:block;width:100%;margin-top:7px;border:1px solid #2b4054;background:#09131e;color:#edf4fb;border-radius:9px;padding:10px;outline:none}.composer select:focus{border-color:#70c4e3}.composer select option{background:#0b1520;color:#edf4fb}.composer input::placeholder,.composer textarea::placeholder{color:#64798e}
+.provider-connect{margin-top:16px;padding:14px;border:1px solid #24374a;border-radius:10px;background:#0b1520}.provider-connect label{display:block;margin:11px 0;color:#c8d5e4;font-size:10px;font-weight:700}.provider-connect input,.provider-connect select{display:block;width:100%;margin-top:6px;padding:9px 10px;border:1px solid #2b4054;border-radius:8px;background:#09131e;color:#edf4fb;outline:none}.provider-connect input:focus,.provider-connect select:focus{border-color:#70c4e3}.connect-heading b,.connect-heading small{display:block}.connect-heading b{font-size:11px}.connect-heading small{margin-top:4px;color:#7f94a9;font-size:9px}.provider-connect .form-grid{gap:8px}.provider-connect .form-grid label{font-size:9px}.provider-connect .primary-button{margin-top:4px}
+.engine-settings{margin:0 0 18px;padding:12px;border:1px solid #294357;border-radius:10px;background:linear-gradient(145deg,#10202e,#0b1520)}.engine-settings summary{cursor:pointer;color:#a9dced;font-size:11px;font-weight:800}.engine-settings>p{font-size:9px;line-height:1.5;color:#91a6ba;margin:8px 0 12px}.engine-settings>label{display:block;margin:10px 0;color:#bdcbd9;font-size:9px;font-weight:700}.engine-settings>label>span{float:right;color:#8298ad}.engine-settings input,.engine-settings select{display:block;width:100%;margin-top:6px;padding:9px 10px;border:1px solid #2b4054;border-radius:8px;background:#09131e;color:#edf4fb;outline:none}.engine-settings .primary-button{margin:5px 0 0}

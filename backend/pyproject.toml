@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "meloforge-backend"
-version = "0.1.0"
+version = "0.4.0"
 description = "Adaptive local/cloud AI orchestration backend"
 requires-python = ">=3.11"
 dependencies = [

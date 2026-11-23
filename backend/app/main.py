@@ -1,20 +1,57 @@
-from fastapi import FastAPI, HTTPException
+import logging
+import shutil
+import sys
+from pathlib import Path
+from urllib.parse import urlparse
+
+from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.config import get_settings
-from app.schemas import ChatRequest, VideoRequest
-from app.services.hardware import get_hardware_status
-from app.services.providers import create_chat_completion, novita_create_video, novita_video_status, public_provider_status
+from app.schemas import (
+    AceStepConfigUpdate,
+    ChatRequest,
+    ComposeRequest,
+    ProviderConfigUpdate,
+    RuntimeSettingsUpdate,
+    SongRequest,
+    StudioDraftRequest,
+    VideoRequest,
+)
+from app.services import jobs
+from app.services.ace_step import AceStepConfig
+from app.services.ace_step import list_models as ace_step_models
+from app.services.ace_step import song_status as ace_step_song_status
+from app.services.ace_step import submit_song as ace_step_submit_song
+from app.services.composer import compose_song_video, lyrics_path, output_path
+from app.services.hardware import get_hardware_status, local_tool_status
+from app.services.providers import (
+    create_chat_completion,
+    novita_create_video,
+    novita_video_status,
+    public_provider_status,
+)
 from app.services.router import RoutingError, choose_provider
+from app.services.runtime_settings import (
+    load_runtime_preferences,
+    public_runtime_preferences,
+    update_provider_preferences,
+    update_runtime_preferences,
+)
+from app.services.secret_store import store_secret
 
 settings = get_settings()
-app = FastAPI(title="MeloForge Studio API", version="0.1.0", description="Adaptive local/cloud AI orchestration")
+logger = logging.getLogger("meloforge")
+load_runtime_preferences(settings)
+app = FastAPI(title="MeloForge Studio API", version="0.4.0", description="Adaptive local/cloud AI orchestration")
 app.add_middleware(CORSMiddleware, allow_origins=settings.origins(), allow_credentials=False, allow_methods=["GET", "POST"], allow_headers=["Content-Type"])
 
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "service": "meloforge-api", "version": "0.1.0"}
+    return {"status": "ok", "service": "meloforge-api", "version": "0.4.0"}
 
 
 @app.get("/api/v1/resources")
@@ -24,7 +61,335 @@ async def resources():
 
 @app.get("/api/v1/providers")
 async def providers():
-    return {"providers": public_provider_status(settings), "default_mode": settings.default_mode, "max_task_budget_usd": settings.max_task_budget_usd}
+    return {"providers": public_provider_status(settings), **public_runtime_preferences(settings)}
+
+
+@app.get("/api/v1/settings")
+async def runtime_settings():
+    return public_runtime_preferences(settings)
+
+
+@app.patch("/api/v1/settings")
+async def update_settings(payload: RuntimeSettingsUpdate):
+    return update_runtime_preferences(settings, payload.model_dump(exclude_none=True))
+
+
+@app.post("/api/v1/providers/configure")
+async def configure_provider(payload: ProviderConfigUpdate):
+    try:
+        store_secret(payload.provider, payload.api_key.strip())
+    except (OSError, RuntimeError, ValueError):
+        raise HTTPException(503, "Ключът не беше шифрован и записан локално.")
+
+    key_fields = {"openrouter": "openrouter_api_key", "novita": "novita_api_key", "nvidia": "nvidia_api_key", "huggingface": "hf_token"}
+    model_fields = {"openrouter": "openrouter_model", "novita": "novita_model", "nvidia": "nvidia_model", "huggingface": "hf_model"}
+    setattr(settings, key_fields[payload.provider], payload.api_key.strip())
+    safe_values = {model_fields[payload.provider]: payload.model.strip()}
+    prefix = "hf" if payload.provider == "huggingface" else payload.provider
+    if payload.input_usd_per_1m is not None:
+        safe_values[f"{prefix}_input_usd_per_1m"] = payload.input_usd_per_1m
+    if payload.output_usd_per_1m is not None:
+        safe_values[f"{prefix}_output_usd_per_1m"] = payload.output_usd_per_1m
+    if payload.novita_video_cost_per_second_usd is not None and payload.provider == "novita":
+        safe_values["novita_video_cost_per_second_usd"] = payload.novita_video_cost_per_second_usd
+    try:
+        update_provider_preferences(settings, payload.provider, safe_values)
+    except OSError:
+        raise HTTPException(500, "Ключът е записан локално, но моделните настройки не се записаха.")
+    status = next(row for row in public_provider_status(settings) if row["id"] == payload.provider)
+    return {"provider": status, "api_key_stored": True, "storage": "Windows DPAPI"}
+
+
+@app.post("/api/v1/music/configure")
+async def configure_music_engine(payload: AceStepConfigUpdate):
+    base_url = str(payload.base_url).rstrip("/")
+    if not _is_local_endpoint(base_url) and payload.cost_per_second_usd <= 0:
+        raise HTTPException(409, "За външен ACE-Step endpoint въведи актуална цена за секунда.")
+    if payload.api_key and payload.api_key.strip():
+        try:
+            store_secret("ace_step", payload.api_key.strip())
+            settings.ace_step_api_key = payload.api_key.strip()
+        except (OSError, RuntimeError, ValueError):
+            raise HTTPException(503, "Ключът не беше шифрован и записан локално.")
+    safe_values = {
+        "ace_step_enabled": True,
+        "ace_step_base_url": base_url,
+        "ace_step_model": payload.model.strip(),
+        "ace_step_cost_per_second_usd": payload.cost_per_second_usd,
+    }
+    try:
+        update_provider_preferences(settings, "ace_step", safe_values)
+    except OSError:
+        raise HTTPException(500, "Настройките на ACE-Step не бяха запазени.")
+    return {"configured": True, "base_url": base_url, "model": settings.ace_step_model, "readiness": await music_readiness()}
+
+
+@app.get("/api/v1/diagnostics")
+async def diagnostics():
+    hardware = get_hardware_status(settings)
+    tools = local_tool_status()
+    return {
+        "api": "ok",
+        "hardware": hardware,
+        "tools": tools,
+        "checks": [
+            {"id": "backend", "label": "MeloForge backend", "ok": True, "detail": "API is responding"},
+            {"id": "nvidia", "label": "NVIDIA diagnostics", "ok": tools["nvidia_smi"], "detail": "nvidia-smi found" if tools["nvidia_smi"] else "nvidia-smi is not available"},
+            {"id": "ollama", "label": "Ollama", "ok": tools["ollama"], "detail": "Ollama command found" if tools["ollama"] else "Install Ollama to use local LLMs"},
+            {"id": "ffmpeg", "label": "FFmpeg", "ok": tools["ffmpeg"], "detail": "FFmpeg found" if tools["ffmpeg"] else "Install FFmpeg for final video assembly"},
+        ],
+    }
+
+
+def _ace_step_config() -> AceStepConfig:
+    return AceStepConfig(settings.ace_step_base_url, settings.ace_step_enabled, settings.ace_step_api_key)
+
+
+def _is_local_endpoint(base_url: str) -> bool:
+    return urlparse(base_url).hostname in {"localhost", "127.0.0.1", "::1"}
+
+
+@app.get("/api/v1/music/readiness")
+async def music_readiness():
+    """Read-only ACE-Step preflight; this endpoint never submits a generation."""
+    if not settings.ace_step_enabled:
+        return {"ready": False, "reason": "ACE-Step е изключен.", "models": [], "base_url": settings.ace_step_base_url, "model": settings.ace_step_model}
+    try:
+        body = await ace_step_models(_ace_step_config())
+        data = body.get("data") or {}
+        models = data.get("models") or []
+        names = [item.get("name") for item in models if isinstance(item, dict) and item.get("name")]
+        model = settings.ace_step_model or data.get("default_model")
+        ready = bool(names and model in names)
+        return {"ready": ready, "model": model, "models": names, "base_url": settings.ace_step_base_url, "reason": None if ready else "Избраният ACE-Step модел не е зареден."}
+    except Exception:
+        return {"ready": False, "reason": "ACE-Step API не отговаря. Провери адреса и дали услугата работи.", "models": [], "base_url": settings.ace_step_base_url, "model": settings.ace_step_model}
+
+
+@app.post("/api/v1/studio/plan")
+async def studio_plan(request: StudioDraftRequest):
+    """Route a music/video brief without contacting a provider or spending money."""
+    message = "\n".join(part for part in [request.prompt, f"Genre: {request.genre}" if request.genre else "", f"Mood: {request.mood}" if request.mood else ""] if part)
+    preview = ChatRequest(messages=[{"role": "user", "content": message}], max_output_tokens=min(1200, max(250, request.duration_seconds * 2)))
+    try:
+        _, decision = choose_provider(preview, settings)
+        return {"ready": True, "decision": decision, "brief": {"duration_seconds": request.duration_seconds}}
+    except RoutingError as exc:
+        return {"ready": False, "reason": {"code": exc.code, "message": exc.message}, "brief": {"duration_seconds": request.duration_seconds}}
+
+@app.post("/api/v1/jobs/video/quote")
+async def create_video_quote(request: VideoRequest):
+    if not settings.novita_api_key:
+        raise HTTPException(409, "Novita не е конфигуриран. Добави нов ключ в локалния .env файл.")
+    if request.duration > settings.novita_video_max_seconds:
+        raise HTTPException(400, "Продължителността надвишава зададения лимит.")
+    if settings.novita_video_cost_per_second_usd <= 0:
+        raise HTTPException(409, "Липсва тарифа за Novita видео. Попълни NOVITA_VIDEO_COST_PER_SECOND_USD в .env.")
+    estimate = round(request.duration * settings.novita_video_cost_per_second_usd * 1.25, 4)
+    budget = request.max_cost_usd if request.max_cost_usd is not None else settings.max_task_budget_usd
+    if estimate > budget:
+        raise HTTPException(402, f"Оценката ${estimate:.4f} надхвърля лимита ${budget:.2f}.")
+    job = jobs.create("video", request.model_dump(exclude={"max_cost_usd"}), estimate)
+    return {**job.__dict__, "max_cost_usd": budget, "estimate_note": "Тарифата от локалния .env плюс 25% резерв; потвърди преди изпращане."}
+
+
+@app.post("/api/v1/jobs/song/quote")
+async def create_song_quote(request: SongRequest):
+    if not settings.ace_step_enabled:
+        raise HTTPException(409, "ACE-Step е изключен. Настрой ACE_STEP_ENABLED и адреса му в локалния .env.")
+    try:
+        model_data = await ace_step_models(_ace_step_config())
+    except Exception:
+        raise HTTPException(409, "ACE-Step API не отговаря. Стартирай услугата и провери ACE_STEP_BASE_URL.")
+    data = model_data.get("data") or {}
+    available_models = [item.get("name") for item in (data.get("models") or []) if isinstance(item, dict)]
+    model = settings.ace_step_model or data.get("default_model")
+    if not model or model not in available_models:
+        raise HTTPException(409, "Избраният ACE-Step модел не е зареден. Зареди го или коригирай ACE_STEP_MODEL.")
+
+    local_endpoint = _is_local_endpoint(settings.ace_step_base_url)
+    if not local_endpoint and settings.ace_step_cost_per_second_usd <= 0:
+        raise HTTPException(409, "За отдалечен ACE-Step endpoint задай актуална ACE_STEP_COST_PER_SECOND_USD.")
+    estimate = 0.0 if local_endpoint else round(request.duration_seconds * settings.ace_step_cost_per_second_usd * 1.25, 4)
+    budget = request.max_cost_usd if request.max_cost_usd is not None else settings.max_task_budget_usd
+    if estimate > budget:
+        raise HTTPException(402, f"Оценката ${estimate:.4f} надхвърля лимита ${budget:.2f}.")
+    payload = request.model_dump(exclude={"max_cost_usd"})
+    payload["_ace_step_model"] = model
+    job = jobs.create("song", payload, estimate)
+    note = "Локален ACE-Step; не се таксува API." if local_endpoint else "Отдалечена ACE-Step тарифа от .env плюс 25% резерв."
+    return {**job.__dict__, "max_cost_usd": budget, "estimate_note": f"{note} Потвърди преди изпращане."}
+
+@app.get("/api/v1/jobs/{job_id}")
+async def get_job(job_id: str):
+    job = jobs.get(job_id)
+    if not job: raise HTTPException(404, "Задачата не е намерена.")
+    if job.kind == "song" and job.status == "running" and job.provider_task_id:
+        try:
+            provider_result = await ace_step_song_status(_ace_step_config(), job.provider_task_id)
+            if provider_result["status"] == 1:
+                if provider_result.get("audio_url"):
+                    result = {key: provider_result[key] for key in ("audio_url", "lyrics", "metadata")}
+                    job = jobs.update(job.id, status="completed", result=result) or job
+                else:
+                    job = jobs.update(job.id, status="failed", error="ACE-Step приключи задачата, но не върна аудио файл.") or job
+            elif provider_result["status"] == 2:
+                job = jobs.update(job.id, status="failed", error="ACE-Step не успя да генерира песента.") or job
+        except Exception:
+            # Provider polling is read-only; transient failures leave the job recoverable.
+            pass
+    if job.kind == "video" and job.status == "running" and job.provider_task_id:
+        try:
+            provider_result = await novita_video_status(settings, job.provider_task_id)
+            task = provider_result.get("task") or provider_result
+            raw_status = str(task.get("status") or task.get("task_status") or "running").lower()
+            result = _video_result(provider_result)
+            if raw_status in {"success", "succeeded", "succeed", "completed", "done"} or raw_status.endswith(("_succeed", "_succeeded")):
+                job = jobs.update(job.id, status="completed", result=result) or job
+            elif raw_status in {"failed", "failure", "error", "canceled", "cancelled"} or raw_status.endswith(("_failed", "_failure", "_error", "_canceled", "_cancelled")):
+                job = jobs.update(job.id, status="failed", error="Novita не успя да генерира видеото.") or job
+        except Exception:
+            # A transient status poll failure does not change the provider job state.
+            pass
+    return job
+
+@app.post("/api/v1/jobs/{job_id}/confirm")
+async def confirm_job(job_id: str):
+    job = jobs.confirm(job_id)
+    if not job: raise HTTPException(409, "Задачата не чака потвърждение.")
+    try:
+        if job.kind == "song":
+            request_data = job.payload.copy()
+            model = request_data.pop("_ace_step_model", settings.ace_step_model)
+            lyrics = request_data.get("lyrics", "").strip()
+            prompt_parts = [request_data.get("prompt", ""), request_data.get("genre", ""), request_data.get("mood", "")]
+            music_prompt = ", ".join(part for part in prompt_parts if part)
+            provider_payload = {
+                "task_type": "text2music",
+                "prompt": music_prompt,
+                "vocal_language": request_data.get("language", "bg"),
+                "audio_duration": request_data.get("duration_seconds", 45),
+                "audio_format": "mp3",
+                "model": model,
+                "thinking": not bool(lyrics),
+                "inference_steps": 8,
+                "batch_size": 1,
+            }
+            if lyrics:
+                provider_payload["lyrics"] = lyrics
+            else:
+                provider_payload["sample_mode"] = True
+                provider_payload["sample_query"] = music_prompt
+            provider_result = await ace_step_submit_song(_ace_step_config(), provider_payload)
+            updated_payload = {**request_data, "model": model}
+            return jobs.update(job.id, status="running", provider_task_id=provider_result["task_id"], payload=updated_payload)
+        if job.kind != "video":
+            jobs.update(job.id, status="failed", error="Този тип генерация няма свързан engine.")
+            raise HTTPException(409, "За този тип генерация engine не е конфигуриран.")
+        provider_result = await novita_create_video(settings, job.payload)
+        task_id = provider_result.get("task_id") or (provider_result.get("task") or {}).get("task_id")
+        if not task_id:
+            jobs.update(job.id, status="failed", error="Novita не върна идентификатор на задачата.")
+            raise HTTPException(502, "Novita не върна идентификатор на задачата.")
+        return jobs.update(job.id, status="running", provider_task_id=str(task_id))
+    except HTTPException:
+        raise
+    except Exception:
+        message = "ACE-Step заявката не бе успешна. Провери конфигурацията и услугата." if job.kind == "song" else "Novita заявката не бе успешна. Провери ключа и баланса."
+        jobs.update(job.id, status="failed", error=message)
+        raise HTTPException(502, message)
+
+
+def _run_composition(job_id: str, song_job_id: str, video_job_id: str) -> None:
+    try:
+        song = jobs.get(song_job_id)
+        video = jobs.get(video_job_id)
+        if not song or not video or song.kind != "song" or video.kind != "video" or song.status != "completed" or video.status != "completed":
+            raise ValueError("Both source jobs must be complete before assembly.")
+        audio_url = (song.result or {}).get("audio_url")
+        video_urls = (video.result or {}).get("video_urls") or []
+        if not audio_url or not video_urls:
+            raise ValueError("A source job is missing its media file.")
+        lyrics = (song.result or {}).get("lyrics") or song.payload.get("lyrics") or ""
+        ffmpeg = shutil.which("ffmpeg")
+        if not ffmpeg:
+            raise ValueError("FFmpeg is not installed.")
+        result = compose_song_video(
+            job_id,
+            audio_url=audio_url,
+            video_url=video_urls[0],
+            duration_seconds=int(song.payload.get("duration_seconds", 0)),
+            lyrics=lyrics,
+            ffmpeg=ffmpeg,
+            ace_step_base_url=settings.ace_step_base_url,
+            ace_step_api_key=settings.ace_step_api_key,
+        )
+        result["song_job_id"] = song_job_id
+        result["video_job_id"] = video_job_id
+        jobs.update(job_id, status="completed", result=result)
+    except Exception as exc:
+        logger.error("Media composition %s failed (%s)", job_id, type(exc).__name__)
+        jobs.update(job_id, status="failed", error="Неуспешно сглобяване. Провери дали FFmpeg е наличен и файловете са достъпни.")
+
+
+@app.post("/api/v1/media/compose")
+async def create_composition(request: ComposeRequest, background_tasks: BackgroundTasks):
+    song_job_id, video_job_id = str(request.song_job_id), str(request.video_job_id)
+    song = jobs.get(song_job_id)
+    video = jobs.get(video_job_id)
+    if not song or song.kind != "song" or song.status != "completed":
+        raise HTTPException(409, "Избери завършена песен.")
+    if not video or video.kind != "video" or video.status != "completed":
+        raise HTTPException(409, "Избери завършено видео.")
+    if not (song.result or {}).get("audio_url") or not (video.result or {}).get("video_urls"):
+        raise HTTPException(409, "Източниците нямат готов аудио и видео файл.")
+    if not shutil.which("ffmpeg"):
+        raise HTTPException(503, "FFmpeg не е инсталиран.")
+    composition = jobs.create("composition", {"song_job_id": song.id, "video_job_id": video.id}, 0)
+    jobs.update(composition.id, status="queued")
+    background_tasks.add_task(_run_composition, composition.id, song.id, video.id)
+    return jobs.get(composition.id)
+
+
+@app.get("/api/v1/media/{job_id}/{aspect}")
+async def download_composition(job_id: str, aspect: str):
+    job = jobs.get(job_id)
+    if not job or job.kind != "composition" or job.status != "completed":
+        raise HTTPException(404, "Готовият монтаж не е намерен.")
+    try:
+        target = output_path(job.id, aspect)
+    except ValueError:
+        raise HTTPException(404, "Неподдържан видео формат.")
+    if not target.is_file():
+        raise HTTPException(404, "Видео файлът липсва.")
+    return FileResponse(target, media_type="video/mp4", filename=f"MeloForge-{aspect}.mp4")
+
+
+@app.get("/api/v1/media/{job_id}/lyrics")
+async def download_composition_lyrics(job_id: str):
+    job = jobs.get(job_id)
+    if not job or job.kind != "composition" or job.status != "completed":
+        raise HTTPException(404, "Текстът не е намерен.")
+    target = lyrics_path(job.id)
+    if not target.is_file():
+        raise HTTPException(404, "За тази песен няма наличен текстов файл.")
+    return FileResponse(target, media_type="text/plain; charset=utf-8", filename="lyrics.txt")
+
+
+def _video_result(data: dict) -> dict:
+    """Keep only user-facing video URLs from a provider status response."""
+    urls: list[str] = []
+    def visit(value):
+        if isinstance(value, dict):
+            for key, child in value.items():
+                if key in {"video_url", "url", "output_url"} and isinstance(child, str) and child.startswith("https://"):
+                    urls.append(child)
+                else:
+                    visit(child)
+        elif isinstance(value, list):
+            for child in value: visit(child)
+    visit(data)
+    return {"video_urls": list(dict.fromkeys(urls))}
 
 
 @app.post("/api/v1/route/preview")
@@ -51,21 +416,7 @@ async def chat(request: ChatRequest):
 
 @app.post("/api/v1/video/novita/wan22")
 async def create_wan22_video(request: VideoRequest):
-    if not settings.novita_api_key:
-        raise HTTPException(status_code=409, detail="NOVITA_API_KEY не е конфигуриран.")
-    if request.duration > settings.novita_video_max_seconds:
-        raise HTTPException(status_code=400, detail="Продължителността надвишава зададения лимит.")
-    if settings.novita_video_cost_per_second_usd <= 0:
-        raise HTTPException(status_code=409, detail="Въведи актуалната NOVITA_VIDEO_COST_PER_SECOND_USD преди генерация.")
-    estimate = round(request.duration * settings.novita_video_cost_per_second_usd * 1.25, 4)
-    budget = request.max_cost_usd if request.max_cost_usd is not None else settings.max_task_budget_usd
-    if estimate > budget:
-        raise HTTPException(status_code=402, detail=f"Прогнозната цена {estimate:.4f} USD надвишава лимита {budget:.2f} USD.")
-    try:
-        result = await novita_create_video(settings, request.model_dump())
-        return {"provider": "novita", "model": "wan-2.2-t2v", "estimated_cost_usd": estimate, **result}
-    except Exception:
-        raise HTTPException(status_code=502, detail={"code": "novita_video_error", "message": "Novita video API заявката не бе успешна. Провери ключа и наличността на модела."})
+    raise HTTPException(status_code=410, detail="Този endpoint е изведен от употреба. Използвай /api/v1/jobs/video/quote, после отделно потвърди задачата.")
 
 
 @app.get("/api/v1/video/novita/tasks/{task_id}")
@@ -76,3 +427,21 @@ async def get_wan22_video_status(task_id: str):
         return await novita_video_status(settings, task_id)
     except Exception:
         raise HTTPException(status_code=502, detail={"code": "novita_status_error", "message": "Неуспешна проверка на статуса в Novita."})
+
+
+def _frontend_dist() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys._MEIPASS) / "frontend" / "dist"  # type: ignore[attr-defined]
+    return Path(__file__).resolve().parents[2] / "frontend" / "dist"
+
+
+frontend_dist = _frontend_dist()
+if frontend_dist.exists():
+    app.mount("/assets", StaticFiles(directory=frontend_dist / "assets"), name="assets")
+
+    @app.get("/{path:path}", include_in_schema=False)
+    async def studio_frontend(path: str):
+        target = frontend_dist / path
+        if path and target.is_file():
+            return FileResponse(target)
+        return FileResponse(frontend_dist / "index.html")

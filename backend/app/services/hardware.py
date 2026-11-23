@@ -50,3 +50,12 @@ def get_hardware_status(settings: Settings) -> dict:
             "note": "Advisory check only; actual model loading and inference must be tested.",
         },
     }
+
+
+def local_tool_status() -> dict:
+    """Safe, offline checks; no model is downloaded or cloud request made."""
+    return {
+        "ffmpeg": bool(shutil.which("ffmpeg")),
+        "nvidia_smi": bool(shutil.which("nvidia-smi")),
+        "ollama": bool(shutil.which("ollama")),
+    }
