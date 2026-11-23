@@ -61,6 +61,53 @@ def test_song_quote_waits_for_confirmation_then_submits_to_ace_step(monkeypatch,
     assert calls[0]["vocal_language"] == "bg"
 
 
+def test_song_quote_accepts_ace_step_15_openai_model_list(monkeypatch, tmp_path):
+    monkeypatch.setattr(jobs, "ROOT", tmp_path)
+    monkeypatch.setattr(main.settings, "ace_step_enabled", True)
+    monkeypatch.setattr(main.settings, "ace_step_base_url", "http://127.0.0.1:8001")
+    monkeypatch.setattr(main.settings, "ace_step_model", "acestep-v15-turbo")
+
+    async def models(_config):
+        return {"object": "list", "data": [{"id": "acestep/acestep-v15-turbo", "name": "ACE-Step acestep-v15-turbo"}]}
+
+    monkeypatch.setattr(main, "ace_step_models", models)
+    from app.schemas import SongRequest
+
+    quote = asyncio.run(main.create_song_quote(SongRequest(
+        prompt="warm Bulgarian folk pop",
+        duration_seconds=10,
+        language="bg",
+        lyrics="Светлина по пътя, песен за дома.",
+    )))
+
+    assert quote["status"] == "awaiting_confirmation"
+    assert quote["quote_usd"] == 0
+    assert quote["payload"]["_ace_step_model"] == "acestep-v15-turbo"
+
+
+@pytest.mark.parametrize(
+    "models_payload",
+    [
+        {"data": [{"id": "acestep/acestep-v15-turbo", "name": "ACE-Step acestep-v15-turbo"}]},
+        {"data": {"default_model": "acestep-v15-turbo", "models": [{"name": "acestep-v15-turbo"}]}},
+    ],
+)
+def test_music_readiness_accepts_current_and_legacy_model_shapes(monkeypatch, models_payload):
+    monkeypatch.setattr(main.settings, "ace_step_enabled", True)
+    monkeypatch.setattr(main.settings, "ace_step_base_url", "http://127.0.0.1:8001")
+    monkeypatch.setattr(main.settings, "ace_step_model", "acestep-v15-turbo")
+
+    async def models(_config):
+        return models_payload
+
+    monkeypatch.setattr(main, "ace_step_models", models)
+    readiness = asyncio.run(main.music_readiness())
+
+    assert readiness["ready"] is True
+    assert readiness["model"] == "acestep-v15-turbo"
+    assert readiness["models"] == ["acestep-v15-turbo"]
+
+
 def test_legacy_video_endpoint_cannot_bypass_confirmation(monkeypatch):
     calls = []
 

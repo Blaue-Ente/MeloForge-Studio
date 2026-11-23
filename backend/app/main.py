@@ -149,6 +149,32 @@ def _is_local_endpoint(base_url: str) -> bool:
     return urlparse(base_url).hostname in {"localhost", "127.0.0.1", "::1"}
 
 
+def _ace_step_model_catalog(payload: dict) -> tuple[list[str], str | None]:
+    data = payload.get("data")
+    if isinstance(data, list):
+        entries = data
+        default_model = payload.get("default_model")
+    elif isinstance(data, dict):
+        entries = data.get("models") or []
+        default_model = data.get("default_model") or payload.get("default_model")
+    else:
+        entries = []
+        default_model = payload.get("default_model")
+
+    names = []
+    for item in entries:
+        if not isinstance(item, dict):
+            continue
+        identifier = item.get("id") or item.get("name")
+        if identifier:
+            name = str(identifier).rsplit("/", 1)[-1]
+            if name not in names:
+                names.append(name)
+
+    normalized_default = str(default_model).rsplit("/", 1)[-1] if default_model else None
+    return names, normalized_default
+
+
 @app.get("/api/v1/music/readiness")
 async def music_readiness():
     """Read-only ACE-Step preflight; this endpoint never submits a generation."""
@@ -156,10 +182,10 @@ async def music_readiness():
         return {"ready": False, "reason": "ACE-Step е изключен.", "models": [], "base_url": settings.ace_step_base_url, "model": settings.ace_step_model}
     try:
         body = await ace_step_models(_ace_step_config())
-        data = body.get("data") or {}
-        models = data.get("models") or []
-        names = [item.get("name") for item in models if isinstance(item, dict) and item.get("name")]
-        model = settings.ace_step_model or data.get("default_model")
+        names, default_model = _ace_step_model_catalog(body)
+        model = settings.ace_step_model or default_model
+        if model:
+            model = str(model).rsplit("/", 1)[-1]
         ready = bool(names and model in names)
         return {"ready": ready, "model": model, "models": names, "base_url": settings.ace_step_base_url, "reason": None if ready else "Избраният ACE-Step модел не е зареден."}
     except Exception:
@@ -201,9 +227,10 @@ async def create_song_quote(request: SongRequest):
         model_data = await ace_step_models(_ace_step_config())
     except Exception:
         raise HTTPException(409, "ACE-Step API не отговаря. Стартирай услугата и провери ACE_STEP_BASE_URL.")
-    data = model_data.get("data") or {}
-    available_models = [item.get("name") for item in (data.get("models") or []) if isinstance(item, dict)]
-    model = settings.ace_step_model or data.get("default_model")
+    available_models, default_model = _ace_step_model_catalog(model_data)
+    model = settings.ace_step_model or default_model
+    if model:
+        model = str(model).rsplit("/", 1)[-1]
     if not model or model not in available_models:
         raise HTTPException(409, "Избраният ACE-Step модел не е зареден. Зареди го или коригирай ACE_STEP_MODEL.")
 
