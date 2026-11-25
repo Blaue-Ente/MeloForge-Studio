@@ -103,3 +103,12 @@ def test_atelier_offline_is_a_clear_503(monkeypatch):
     with pytest.raises(HTTPException) as error:
         asyncio.run(main.atelier_project("p1"))
     assert error.value.status_code == 503
+
+
+def test_busy_atelier_is_still_online(monkeypatch):
+    def handler(request):
+        raise httpx.ReadTimeout("slow")
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+    assert asyncio.run(atelier.health("http://127.0.0.1:8765"))["online"] is True

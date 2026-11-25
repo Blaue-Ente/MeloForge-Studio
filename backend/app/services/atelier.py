@@ -44,14 +44,16 @@ async def _call(method: str, url: str, *, json: dict | None = None, timeout: flo
 
 
 async def health(base_url: str) -> dict:
+    """Online check. A busy Atelier (rendering) may answer slowly; only a refused connection is offline."""
     base = _base(base_url)
-    for path in ("/api/health", "/health", "/api/status"):
-        try:
-            return {"online": True, **(await _call("GET", base + path, timeout=4))}
-        except AtelierError as exc:
-            if exc.status == 503:
-                return {"online": False}
-    return {"online": True}
+    try:
+        async with httpx.AsyncClient(timeout=8) as client:
+            response = await client.get(base + "/api/health")
+        return {"online": True, "status_code": response.status_code}
+    except httpx.TimeoutException:
+        return {"online": True, "busy": True}
+    except httpx.HTTPError:
+        return {"online": False}
 
 
 async def create_music_video(base_url: str, payload: dict) -> dict:
