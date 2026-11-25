@@ -79,7 +79,10 @@ def lyric_warnings(lyrics: str, duration_seconds: int) -> list[str]:
     return warnings
 
 
-def lyrics_writer_messages(*, prompt: str, genre: str, mood: str, language: str, duration_seconds: int, title: str = "") -> list[dict[str, str]]:
+def lyrics_writer_messages(
+    *, prompt: str, genre: str, mood: str, language: str, duration_seconds: int, title: str = "",
+    themes: list[str] | None = None, structure: str = "", lyric_style: str = "",
+) -> list[dict[str, str]]:
     """Prompt for an LLM that drafts singable, ACE-Step-tagged lyrics."""
     target_words = max(20, int(duration_seconds * 1.6))
     language_name = LANGUAGE_NAMES.get(language, language)
@@ -97,6 +100,12 @@ def lyrics_writer_messages(*, prompt: str, genre: str, mood: str, language: str,
         f"Title: {title or 'none'}\n"
         f"Target length: about {duration_seconds} seconds, roughly {target_words} sung words in total."
     )
+    if themes:
+        user += "\nCurrent trending themes in this genre (use as inspiration, stay original): " + "; ".join(themes)
+    if structure:
+        user += f"\nSection order: {structure}"
+    if lyric_style:
+        user += f"\nLyric style: {lyric_style}"
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 

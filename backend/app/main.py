@@ -20,6 +20,7 @@ from app.schemas import (
     RuntimeSettingsUpdate,
     SongRequest,
     StudioDraftRequest,
+    TrendRequest,
     VideoRequest,
 )
 from app.services import jobs
@@ -50,6 +51,19 @@ from app.services.runtime_settings import (
 )
 from app.services.secret_store import store_secret
 from app.services.songs import finalize_song, song_file
+from app.services.trends import (
+    GENRES,
+    ChartTrack,
+    analysis_messages,
+    chart_stats,
+    default_brief,
+    fetch_chart,
+    freshness_notes,
+    load_cached,
+    parse_brief,
+    public_genres,
+    save_cache,
+)
 
 settings = get_settings()
 logger = logging.getLogger("meloforge")
@@ -272,7 +286,7 @@ async def create_song_quote(request: SongRequest):
 @app.post("/api/v1/music/lyrics")
 async def draft_lyrics(request: LyricsDraftRequest):
     """Draft ACE-Step-tagged lyrics with the routed LLM (local first, budget-gated cloud)."""
-    messages = lyrics_writer_messages(prompt=request.prompt, genre=request.genre, mood=request.mood, language=request.language, duration_seconds=request.duration_seconds, title=request.title)
+    messages = lyrics_writer_messages(prompt=request.prompt, genre=request.genre, mood=request.mood, language=request.language, duration_seconds=request.duration_seconds, title=request.title, themes=request.themes, structure=request.structure, lyric_style=request.lyric_style)
     chat_request = ChatRequest(messages=messages, provider=request.provider, max_output_tokens=min(2048, 300 + request.duration_seconds * 6), max_cost_usd=request.max_cost_usd)
     try:
         selected, decision = choose_provider(chat_request, settings)
@@ -285,6 +299,58 @@ async def draft_lyrics(request: LyricsDraftRequest):
     if not lyrics:
         raise HTTPException(502, {"code": "empty_lyrics", "message": "Моделът върна празен текст."})
     return {"lyrics": lyrics, "provider": selected.name, "model": selected.model, "estimated_cost_usd": decision["estimated_cost_usd"], "warnings": lyric_warnings(lyrics, request.duration_seconds)}
+
+@app.get("/api/v1/music/genres")
+async def music_genres():
+    return {"genres": public_genres()}
+
+
+@app.post("/api/v1/music/trends")
+async def music_trends(request: TrendRequest):
+    """Current chart for a genre (Deezer, cached 6 h) plus a production/lyrics brief.
+
+    With ``analyze`` the brief comes from the routed LLM (budget-gated); otherwise,
+    or if no LLM is available, a deterministic brief from preset + chart numbers.
+    """
+    genre = GENRES.get(request.genre)
+    if not genre:
+        raise HTTPException(404, "Непознат жанр.")
+    cached = None if request.refresh else load_cached(jobs.ROOT, genre.id)
+    if cached is None:
+        try:
+            tracks = await fetch_chart(genre)
+        except Exception:
+            raise HTTPException(502, "Класацията не можа да бъде заредена (Deezer). Провери интернет връзката.")
+        if not tracks:
+            raise HTTPException(502, "Класацията за този жанр е празна.")
+        cached = save_cache(jobs.ROOT, genre.id, tracks, chart_stats(tracks))
+    tracks = [ChartTrack(**row) for row in cached["tracks"]]
+    stats = cached["stats"]
+    brief = default_brief(genre, stats)
+    analysis = {"used_llm": False, "provider": None, "model": None, "estimated_cost_usd": 0.0, "note": None}
+    if request.analyze:
+        messages = analysis_messages(genre, tracks, stats, request.language)
+        chat_request = ChatRequest(messages=messages, provider=request.provider, max_output_tokens=700, max_cost_usd=request.max_cost_usd)
+        try:
+            selected, decision = choose_provider(chat_request, settings)
+            result = await create_chat_completion(selected, messages, chat_request.max_output_tokens)
+            brief = parse_brief(result.get("content") or "", brief)
+            analysis.update(used_llm=brief.get("source") == "llm", provider=selected.name, model=selected.model, estimated_cost_usd=decision["estimated_cost_usd"])
+        except RoutingError as exc:
+            analysis["note"] = exc.message
+        except Exception:
+            analysis["note"] = "LLM анализът не беше успешен; показан е анализ по класацията."
+    return {
+        "genre": {"id": genre.id, "label": genre.label},
+        "source": "Deezer chart (регионална класация)",
+        "fetched_at": cached["fetched_at"],
+        "tracks": [row for row in cached["tracks"]][:25],
+        "stats": stats,
+        "notes": freshness_notes(stats),
+        "brief": brief,
+        "analysis": analysis,
+    }
+
 
 @app.get("/api/v1/jobs")
 async def list_jobs(kind: str | None = Query(default=None, pattern="^(song|video|composition)$"), limit: int = Query(default=20, ge=1, le=200)):

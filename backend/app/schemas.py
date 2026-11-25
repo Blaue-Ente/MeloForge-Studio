@@ -57,6 +57,19 @@ class LyricsDraftRequest(BaseModel):
     duration_seconds: int = Field(default=90, ge=10, le=600)
     provider: ProviderName | None = None
     max_cost_usd: float | None = Field(default=None, ge=0, le=100)
+    # Optional trend brief from /api/v1/music/trends to steer themes and structure.
+    themes: list[str] = Field(default_factory=list, max_length=8)
+    structure: str = Field(default="", max_length=300)
+    lyric_style: str = Field(default="", max_length=600)
+
+
+class TrendRequest(BaseModel):
+    genre: str = Field(min_length=2, max_length=40, pattern=r"^[a-z0-9_-]+$")
+    language: Literal["bg", "en"] = "bg"
+    analyze: bool = True
+    refresh: bool = False
+    provider: ProviderName | None = None
+    max_cost_usd: float | None = Field(default=None, ge=0, le=100)
 
 
 class ComposeRequest(BaseModel):

@@ -6,6 +6,7 @@ agent can create a song end to end:
     python -m app.cli readiness
     python -m app.cli lyrics --prompt "..." --language bg --duration 120
     python -m app.cli song --prompt "..." --lyrics-file song.txt --duration 120 --yes --out ./out
+    python -m app.cli trends --genre pop          (or --genre list)
     python -m app.cli master input.wav --out ./mastered --preset streaming
     python -m app.cli jobs --kind song
 
@@ -74,6 +75,8 @@ def cmd_lyrics(args) -> int:
             "language": args.language, "duration_seconds": args.duration}
     if args.provider:
         body["provider"] = args.provider
+    if args.themes:
+        body["themes"] = [item.strip() for item in args.themes.split(";") if item.strip()]
     with _client() as client:
         response = client.post("/api/v1/music/lyrics", json=body)
     if response.status_code != 200:
@@ -82,6 +85,21 @@ def cmd_lyrics(args) -> int:
     if args.out:
         Path(args.out).write_text(data["lyrics"] + "\n", encoding="utf-8", newline="\n")
         data["written_to"] = str(Path(args.out).resolve())
+    return _print(data)
+
+
+def cmd_trends(args) -> int:
+    body = {"genre": args.genre, "language": args.language, "analyze": not args.no_analyze, "refresh": args.refresh}
+    if args.provider:
+        body["provider"] = args.provider
+    with _client() as client:
+        if args.genre == "list":
+            return _print(client.get("/api/v1/music/genres").json()["genres"])
+        response = client.post("/api/v1/music/trends", json=body)
+    if response.status_code != 200:
+        return _print({"error": _detail(response)}, 1)
+    data = response.json()
+    data["tracks"] = [f"{t['rank']}. {t['artist']} - {t['title']}" for t in data["tracks"][:args.top]]
     return _print(data)
 
 
@@ -177,6 +195,7 @@ def build_parser() -> argparse.ArgumentParser:
     song_brief(lyrics_cmd)
     lyrics_cmd.add_argument("--provider", choices=["ollama", "openrouter", "novita", "nvidia", "huggingface"])
     lyrics_cmd.add_argument("--out", help="Write lyrics to this file")
+    lyrics_cmd.add_argument("--themes", help='Trend themes, separated by ";" (from the trends command)')
     lyrics_cmd.set_defaults(func=cmd_lyrics)
 
     song_cmd = sub.add_parser("song", help="Generate, master and export a song")
@@ -196,6 +215,15 @@ def build_parser() -> argparse.ArgumentParser:
     song_cmd.add_argument("--timeout", type=int, default=3600)
     song_cmd.add_argument("--out", help="Copy MP3/WAV/lyrics/report here")
     song_cmd.set_defaults(func=cmd_song)
+
+    trends_cmd = sub.add_parser("trends", help="Chart trends for a genre (use --genre list for presets)")
+    trends_cmd.add_argument("--genre", required=True)
+    trends_cmd.add_argument("--language", choices=["bg", "en"], default="bg")
+    trends_cmd.add_argument("--no-analyze", action="store_true", help="Chart statistics only, no LLM")
+    trends_cmd.add_argument("--refresh", action="store_true", help="Ignore the 6 h cache")
+    trends_cmd.add_argument("--provider", choices=["ollama", "openrouter", "novita", "nvidia", "huggingface"])
+    trends_cmd.add_argument("--top", type=int, default=10)
+    trends_cmd.set_defaults(func=cmd_trends)
 
     master_cmd = sub.add_parser("master", help="Loudness-master any audio file")
     master_cmd.add_argument("input")

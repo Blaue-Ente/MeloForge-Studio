@@ -53,6 +53,9 @@ function ProviderConnector({ providers, onSaved }: { providers: Provider[]; onSa
 
 type Loudness = { integrated_lufs: number; true_peak_dbtp: number; loudness_range_lu: number; duration_seconds: number };
 type Mastering = { preset: string; target: { lufs: number; true_peak: number }; before: Loudness; after: Loudness; compliant: boolean };
+type GenreOption = { id: string; label: string; caption: string; bpm: [number, number]; mood: string };
+type TrendBrief = { caption: string; mood: string; bpm: number; duration_seconds: number; structure: string; themes: string[]; lyric_style: string; summary?: string; source: string };
+type TrendResult = { genre: { id: string; label: string }; source: string; tracks: { rank: number; title: string; artist: string; duration: number; release_date: string | null }[]; stats: { median_duration_seconds: number | null; median_bpm: number | null; bpm_samples: number; released_last_90_days_pct: number | null; released_last_year_pct: number | null }; notes: string[]; brief: TrendBrief; analysis: { used_llm: boolean; provider: string | null; model: string | null; estimated_cost_usd: number | null; note: string | null } };
 type Readiness = { ready: boolean; reason?: string | null; model?: string; base_url?: string; models?: string[]; lm_enabled?: boolean };
 const stateLabels: Record<string, string> = { awaiting_confirmation: "Чака потвърждение", queued: "На опашка", running: "Генерира се", mastering: "Мастериране", completed: "Готова песен", failed: "Неуспешно" };
 const presetLabels: Record<string, string> = { streaming: "Streaming · −14 LUFS", apple: "Apple Music · −16 LUFS", broadcast: "Broadcast EBU R128 · −23 LUFS" };
@@ -66,6 +69,8 @@ function MusicStudio({ apiOnline }: { apiOnline: boolean }) {
   const [readiness, setReadiness] = useState<Readiness>({ ready: false });
   const [engineUrl, setEngineUrl] = useState("http://127.0.0.1:8001"); const [engineModel, setEngineModel] = useState("acestep-v15-turbo"); const [engineKey, setEngineKey] = useState(""); const [engineRate, setEngineRate] = useState(0); const [engineLm, setEngineLm] = useState(false); const [engineSaving, setEngineSaving] = useState(false); const [engineNotice, setEngineNotice] = useState("");
   const [job, setJob] = useState<SongJob | null>(null); const [busy, setBusy] = useState(false); const [error, setError] = useState(""); const [warnings, setWarnings] = useState<string[]>([]);
+  const [genres, setGenres] = useState<GenreOption[]>([]); const [genreId, setGenreId] = useState("synthwave"); const [llmProvider, setLlmProvider] = useState(""); const [llmOptions, setLlmOptions] = useState<{ id: string; name: string; model: string | null }[]>([]);
+  const [trend, setTrend] = useState<TrendResult | null>(null); const [trendBusy, setTrendBusy] = useState(false); const [trendError, setTrendError] = useState(""); const [appliedBrief, setAppliedBrief] = useState<TrendBrief | null>(null);
   const [lyricsBusy, setLyricsBusy] = useState(false); const [lyricsNotice, setLyricsNotice] = useState(""); const [history, setHistory] = useState<SongJob[]>([]);
 
   const loadHistory = () => fetch("/api/v1/jobs?kind=song&limit=8").then((response) => response.ok ? response.json() : { jobs: [] }).then((data) => setHistory(data.jobs || [])).catch(() => undefined);
@@ -76,6 +81,8 @@ function MusicStudio({ apiOnline }: { apiOnline: boolean }) {
     const savedId = window.localStorage.getItem("meloforge.latestSongJob");
     if (savedId) void fetch(`/api/v1/jobs/${savedId}`).then((response) => response.ok ? response.json() : null).then((data) => { if (alive && data?.kind === "song") setJob(data); }).catch(() => undefined);
     void loadHistory();
+    void fetch("/api/v1/music/genres").then((response) => response.json()).then((data) => { if (alive) setGenres(data.genres || []); }).catch(() => undefined);
+    void fetch("/api/v1/providers").then((response) => response.json()).then((data) => { if (alive) setLlmOptions((data.providers || []).filter((item: Provider) => item.configured).map((item: Provider) => ({ id: item.id, name: item.name, model: item.model }))); }).catch(() => undefined);
     return () => { alive = false; };
   }, []);
 
@@ -88,10 +95,35 @@ function MusicStudio({ apiOnline }: { apiOnline: boolean }) {
     return () => window.clearTimeout(timer);
   }, [job]);
 
+  function chooseGenre(id: string) {
+    setGenreId(id); setTrend(null); setTrendError(""); setAppliedBrief(null);
+    const preset = genres.find((item) => item.id === id);
+    if (preset) { setGenre(preset.caption.split(",")[0]); setMood(preset.mood); }
+  }
+
+  async function analyzeTrends(refresh = false) {
+    setTrendBusy(true); setTrendError("");
+    try {
+      const body: Record<string, unknown> = { genre: genreId, language, analyze: true, refresh };
+      if (llmProvider) body.provider = llmProvider;
+      const response = await fetch("/api/v1/music/trends", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(errorText(data, "Анализът не беше успешен."));
+      setTrend(data);
+    } catch (caught) { setTrendError(caught instanceof Error ? caught.message : "Анализът не беше успешен."); }
+    finally { setTrendBusy(false); }
+  }
+
+  function applyTrend() {
+    if (!trend) return;
+    const brief = trend.brief;
+    setPrompt(brief.caption); setMood(brief.mood); setBpm(String(brief.bpm)); setDuration(Math.min(300, Math.max(10, brief.duration_seconds))); setAppliedBrief(brief);
+  }
+
   async function draftLyrics() {
     setLyricsBusy(true); setLyricsNotice("");
     try {
-      const response = await fetch("/api/v1/music/lyrics", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt, title, genre, mood, language, duration_seconds: duration }) });
+      const response = await fetch("/api/v1/music/lyrics", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt, title, genre, mood, language, duration_seconds: duration, ...(llmProvider ? { provider: llmProvider } : {}), ...(appliedBrief ? { themes: appliedBrief.themes, structure: appliedBrief.structure, lyric_style: appliedBrief.lyric_style } : {}) }) });
       const data = await response.json();
       if (!response.ok) throw new Error(errorText(data, "Текстът не беше генериран."));
       setLyrics(data.lyrics); setInstrumental(false);
@@ -143,8 +175,22 @@ function MusicStudio({ apiOnline }: { apiOnline: boolean }) {
     {history.length > 0 && <div className="song-history"><small className="eyebrow">ПОСЛЕДНИ ПЕСНИ</small>{history.map((item) => <button key={item.id} className={item.id === job?.id ? "active" : ""} onClick={() => { setJob(item); setWarnings([]); window.localStorage.setItem("meloforge.latestSongJob", item.id); }}><b>{songTitle(item)}</b><span className={`job-state ${item.status}`}>{stateLabels[item.status] || item.status}</span></button>)}</div>}
   </div><div className="panel composer"><details className="engine-settings" open={!readiness.ready}><summary>Настрой музикалния engine</summary><p>Инсталирай и стартирай ACE-Step 1.5 API. За локален адрес не се начислява API цена; отдалечен endpoint изисква зададена тарифа.</p><label>ACE-Step API адрес<input value={engineUrl} onChange={(event) => setEngineUrl(event.target.value)} placeholder="http://127.0.0.1:8001" /></label><label>Модел<select value={engineModel} onChange={(event) => setEngineModel(event.target.value)}>{readiness.models?.length ? readiness.models.map((name) => <option key={name} value={name}>{name}</option>) : <option value={engineModel}>{engineModel}</option>}</select></label><label>API ключ <span>по избор</span><input type="password" value={engineKey} onChange={(event) => setEngineKey(event.target.value)} autoComplete="new-password" placeholder="Ключ за private endpoint" /></label><label>Цена · USD / секунда<input type="number" min="0" step="0.001" value={engineRate} onChange={(event) => setEngineRate(Number(event.target.value))} /></label><label className="checkline"><input type="checkbox" checked={engineLm} onChange={(event) => setEngineLm(event.target.checked)} /> ACE-Step е стартиран с 5Hz LM (ACESTEP_INIT_LLM=true) — автоматичен текст и „thinking“</label><button className="primary-button" disabled={engineSaving || !engineUrl.trim() || !engineModel.trim()} onClick={() => void configureEngine()}>{engineSaving ? "Запазване…" : "Запази и провери връзката"}</button>{engineNotice && <p className="inline-notice" role="status">{engineNotice}</p>}</details>
     <div className="form-grid"><label>Заглавие<input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={120} placeholder="По желание" /></label><label>Език на текста<select value={language} onChange={(event) => setLanguage(event.target.value as "bg" | "en")}><option value="bg">Български</option><option value="en">English</option></select></label></div>
+    <div className="form-grid"><label>Жанр<select value={genreId} onChange={(event) => chooseGenre(event.target.value)}>{genres.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label><label>AI модел за текст и анализ<select value={llmProvider} onChange={(event) => setLlmProvider(event.target.value)}><option value="">Автоматично (по режим и бюджет)</option>{llmOptions.map((item) => <option key={item.id} value={item.id}>{item.name}{item.model ? ` · ${item.model}` : ""}</option>)}</select></label></div>
+    {llmOptions.length === 0 && <p className="inline-notice">Няма свързан AI модел за текст. Добави OpenRouter (или друг) ключ в Resource Manager — един текст струва под цент.</p>}
+    <div className="trend-box"><div className="trend-head"><b>Актуални тенденции · {genres.find((item) => item.id === genreId)?.label || genreId}</b><button className="secondary-button compact" disabled={!apiOnline || trendBusy} onClick={() => void analyzeTrends()}><Activity size={14} />{trendBusy ? "Анализирам…" : trend ? "Анализирай отново" : "Анализирай хитовете"}</button></div>
+      {trendError && <p className="inline-notice error-text">{trendError}</p>}
+      {trend && <><div className="trend-stats"><span><b>{trend.stats.median_duration_seconds ? `${Math.floor(trend.stats.median_duration_seconds / 60)}:${String(trend.stats.median_duration_seconds % 60).padStart(2, "0")}` : "—"}</b> средна дължина</span><span><b>{trend.brief.bpm}</b> BPM препоръка</span><span><b>{trend.stats.released_last_year_pct ?? "—"}%</b> издадени до 1 г.</span></div>
+        {trend.notes.map((note) => <p key={note} className="inline-notice warn-text">⚠ {note}</p>)}
+        {trend.brief.summary && <p className="trend-summary">{trend.brief.summary}</p>}
+        <p className="trend-caption"><b>Звук:</b> {trend.brief.caption}</p>
+        {trend.brief.themes.length > 0 && <div className="theme-tags">{trend.brief.themes.map((theme) => <span key={theme}>{theme}</span>)}</div>}
+        <p className="inline-notice">{trend.analysis.used_llm ? `Анализ: ${trend.analysis.provider} · ${trend.analysis.model}${trend.analysis.estimated_cost_usd ? ` · ~$${trend.analysis.estimated_cost_usd.toFixed(4)}` : " · $0"}` : (trend.analysis.note || "Анализ по класацията и жанровия профил (без AI).")}</p>
+        <details className="lyrics-result"><summary>Топ 10 в класацията ({trend.source})</summary><ol className="chart-list">{trend.tracks.slice(0, 10).map((track) => <li key={track.rank}>{track.artist} — {track.title}<em>{track.release_date?.slice(0, 4) || ""}</em></li>)}</ol></details>
+        <button className="primary-button" onClick={applyTrend}>Приложи към песента (звук, настроение, BPM, дължина, теми)</button>
+        {appliedBrief && <p className="inline-notice">✓ Приложено. „Напиши текст с AI“ ще използва темите и структурата от анализа.</p>}</>}
+    </div>
     <label>Стил и звучене <span>инструменти, вокал, емоция</span><textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} maxLength={1200} /></label>
-    <div className="form-grid"><label>Жанр<input value={genre} onChange={(event) => setGenre(event.target.value)} maxLength={80} /></label><label>Настроение<input value={mood} onChange={(event) => setMood(event.target.value)} maxLength={80} /></label></div>
+    <div className="form-grid"><label>Жанр (за engine-а)<input value={genre} onChange={(event) => setGenre(event.target.value)} maxLength={80} /></label><label>Настроение<input value={mood} onChange={(event) => setMood(event.target.value)} maxLength={80} /></label></div>
     <label className="checkline"><input type="checkbox" checked={instrumental} onChange={(event) => setInstrumental(event.target.checked)} /> Инструментал (без вокал)</label>
     {!instrumental && <label>Текст на песента <span>{readiness.lm_enabled ? "празно = ACE-Step пише сам" : "тагове [Verse] / [Chorus] се добавят автоматично"}</span><textarea className="lyrics-input" value={lyrics} onChange={(event) => setLyrics(event.target.value)} maxLength={10000} placeholder={"[Verse 1]\nПърви куплет…\n\n[Chorus]\nПрипев…"} /></label>}
     {!instrumental && <button className="secondary-button" disabled={!apiOnline || lyricsBusy || prompt.trim().length < 3} onClick={() => void draftLyrics()}><Sparkles size={15} />{lyricsBusy ? "Пиша текст…" : "Напиши текст с AI"}</button>}

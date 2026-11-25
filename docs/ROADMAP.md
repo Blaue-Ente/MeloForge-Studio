@@ -13,6 +13,7 @@
 - [ ] Queue, retries, cancellation and provider health checks
 - [x] ACE-Step song-generation adapter (structure tags, BPM/key/seed, lossless output)
 - [x] Loudness mastering (−14/−16/−23 LUFS, −1 dBTP), WAV/MP3 deliverables, mastering report
+- [x] Genre presets and chart trend analysis (Deezer + LLM brief)
 - [x] Agent CLI (`python -m app.cli`) and song history API
 - [ ] VoxCPM voice-over adapter (not a singing engine)
 - [ ] InvokeAI keyframes and scene references
