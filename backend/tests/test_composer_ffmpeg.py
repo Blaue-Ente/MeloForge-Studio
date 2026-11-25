@@ -42,7 +42,8 @@ def test_ffmpeg_assembles_full_track_in_both_aspects(monkeypatch, tmp_path):
     )
 
     assert result["formats"] == ["16x9", "9x16"]
-    assert result["duration_seconds"] == 2
+    # Duration comes from the real audio file, not the requested length.
+    assert abs(result["duration_seconds"] - 2) < 0.2
     assert composer.lyrics_path("ab31d9fd-312d-4565-97df-f7d197adeb02").read_text(encoding="utf-8").strip() == "One local test line"
     for aspect, expected in (("16x9", "1280x720"), ("9x16", "720x1280")):
         output = composer.output_path("ab31d9fd-312d-4565-97df-f7d197adeb02", aspect)

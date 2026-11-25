@@ -1,5 +1,5 @@
-from functools import lru_cache
 import os
+from functools import lru_cache
 from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -49,6 +49,8 @@ class Settings(BaseSettings):
     ace_step_api_key: str = ""
     ace_step_model: str = "acestep-v15-turbo"
     ace_step_cost_per_second_usd: float = 0.0
+    # ACE-Step's 5Hz LM powers thinking/sample mode; GPUs under ~6 GB start without it.
+    ace_step_lm_enabled: bool = False
 
     def origins(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]

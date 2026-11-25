@@ -3,8 +3,8 @@
 The connector only submits work after a user confirmed a server-side quote.
 """
 
-from dataclasses import dataclass
 import json
+from dataclasses import dataclass
 from urllib.parse import urljoin
 
 import httpx

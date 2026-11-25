@@ -29,3 +29,6 @@ cache/
 Thumbs.db
 .vscode/
 .idea/
+
+# Generated songs and live-test media
+artifacts/

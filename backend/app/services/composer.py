@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 import httpx
 
 from app.services import jobs
+from app.services.mastering import probe_duration
 
 _FORMATS = {"16x9": (1280, 720), "9x16": (720, 1280)}
 _MAX_DOWNLOAD_BYTES = 1_000_000_000
@@ -67,18 +68,29 @@ def compose_song_video(
     ffmpeg: str,
     ace_step_base_url: str,
     ace_step_api_key: str,
+    local_audio: Path | None = None,
 ) -> dict:
-    audio_url = _safe_asset_url(audio_url, ace_step_base_url, cloud_media=True)
     video_url = _safe_asset_url(video_url, "https://api.novita.ai", cloud_media=True)
     destination = jobs.ROOT / "media" / job_id
     destination.mkdir(parents=True, exist_ok=True)
 
     with TemporaryDirectory(prefix="compose-", dir=destination) as temp_dir:
         temp = Path(temp_dir)
-        audio_file, video_file = temp / "track.mp3", temp / "scene.mp4"
-        audio_needs_key = urlparse(audio_url).hostname == urlparse(ace_step_base_url).hostname
-        _download(audio_url, audio_file, api_key=ace_step_api_key if audio_needs_key else "")
+        video_file = temp / "scene.mp4"
+        if local_audio is not None and local_audio.is_file():
+            # Prefer the loudness-mastered song; it is already on disk.
+            audio_file = local_audio
+        else:
+            audio_url = _safe_asset_url(audio_url, ace_step_base_url, cloud_media=True)
+            audio_file = temp / "track.mp3"
+            audio_needs_key = urlparse(audio_url).hostname == urlparse(ace_step_base_url).hostname
+            _download(audio_url, audio_file, api_key=ace_step_api_key if audio_needs_key else "")
         _download(video_url, video_file)
+        try:
+            # ACE-Step's output length can differ slightly from the requested duration.
+            duration_seconds = max(1, round(probe_duration(audio_file), 2))  # type: ignore[assignment]
+        except Exception:
+            pass
         for aspect, (width, height) in _FORMATS.items():
             output = output_path(job_id, aspect)
             filter_graph = f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1"
@@ -86,7 +98,7 @@ def compose_song_video(
                 ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-stream_loop", "-1", "-i", str(video_file),
                 "-i", str(audio_file), "-t", str(duration_seconds), "-map", "0:v:0", "-map", "1:a:0",
                 "-vf", filter_graph, "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
-                "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", str(output),
+                "-c:a", "aac", "-b:a", "256k", "-ar", "48000", "-shortest", "-movflags", "+faststart", str(output),
             ]
             creation_flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
             completed = subprocess.run(
@@ -101,7 +113,7 @@ def compose_song_video(
                 raise RuntimeError("FFmpeg could not assemble the generated audio and video.")
 
     if lyrics.strip():
-        lyrics_path(job_id).write_text(lyrics.strip() + "\n", encoding="utf-8")
+        lyrics_path(job_id).write_text(lyrics.strip() + "\n", encoding="utf-8", newline="\n")
     return {
         "formats": list(_FORMATS.keys()),
         "duration_seconds": duration_seconds,

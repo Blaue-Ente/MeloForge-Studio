@@ -37,6 +37,25 @@ class SongRequest(BaseModel):
     language: Literal["bg", "en"] = "bg"
     duration_seconds: int = Field(default=45, ge=10, le=600)
     lyrics: str = Field(default="", max_length=10000)
+    instrumental: bool = False
+    # Optional musical metadata. ACE-Step treats these as anchors; leave empty to let it choose.
+    bpm: int | None = Field(default=None, ge=30, le=300)
+    key_scale: str = Field(default="", max_length=24, pattern=r"^$|^[A-Ga-g][#b]?\s?(m|min|minor|maj|major|Major|Minor)?$")
+    time_signature: Literal["2", "3", "4", "6"] | None = None
+    seed: int | None = Field(default=None, ge=0, le=2147483647)
+    inference_steps: int = Field(default=8, ge=1, le=20)
+    master_preset: Literal["streaming", "apple", "broadcast"] = "streaming"
+    max_cost_usd: float | None = Field(default=None, ge=0, le=100)
+
+
+class LyricsDraftRequest(BaseModel):
+    prompt: str = Field(min_length=3, max_length=1200)
+    title: str = Field(default="", max_length=120)
+    genre: str = Field(default="", max_length=80)
+    mood: str = Field(default="", max_length=80)
+    language: Literal["bg", "en"] = "bg"
+    duration_seconds: int = Field(default=90, ge=10, le=600)
+    provider: ProviderName | None = None
     max_cost_usd: float | None = Field(default=None, ge=0, le=100)
 
 
@@ -59,6 +78,8 @@ class AceStepConfigUpdate(BaseModel):
     model: str = Field(min_length=1, max_length=180)
     api_key: str | None = Field(default=None, max_length=500)
     cost_per_second_usd: float = Field(default=0, ge=0, le=100)
+    # True only when the ACE-Step server was started with its 5Hz LM (ACESTEP_INIT_LLM).
+    lm_enabled: bool = False
 
 
 class RuntimeSettingsUpdate(BaseModel):

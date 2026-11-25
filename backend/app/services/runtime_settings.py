@@ -7,14 +7,13 @@ from typing import Any
 
 from app.config import Settings
 
-
 _ALLOWED_FIELDS = {"default_mode", "max_task_budget_usd", "allow_cloud_fallback"}
 _PROVIDER_FIELDS = {
     "openrouter": {"openrouter_model", "openrouter_input_usd_per_1m", "openrouter_output_usd_per_1m"},
     "novita": {"novita_model", "novita_input_usd_per_1m", "novita_output_usd_per_1m", "novita_video_cost_per_second_usd"},
     "nvidia": {"nvidia_model", "nvidia_input_usd_per_1m", "nvidia_output_usd_per_1m"},
     "huggingface": {"hf_model", "hf_input_usd_per_1m", "hf_output_usd_per_1m"},
-    "ace_step": {"ace_step_enabled", "ace_step_base_url", "ace_step_model", "ace_step_cost_per_second_usd"},
+    "ace_step": {"ace_step_enabled", "ace_step_base_url", "ace_step_model", "ace_step_cost_per_second_usd", "ace_step_lm_enabled"},
 }
 
 

@@ -6,7 +6,7 @@ type Mode = "local_first" | "hybrid" | "cloud_quality";
 type Provider = { id: string; name: string; description: string; configured: boolean; model: string | null; pricing_configured: boolean; input_usd_per_1m?: number; output_usd_per_1m?: number; video_cost_per_second_usd?: number | null; kind: "local" | "cloud" };
 type Resources = { ram_total_gb: number; ram_available_gb: number; gpu: { detected: boolean; vram_total_gb: number | null; vram_available_gb: number | null } };
 type Check = { id: string; label: string; ok: boolean; detail: string };
-type SongJob = { id: string; kind: string; status: string; quote_usd: number; payload: { title: string; prompt: string; genre: string; mood: string; language: string; duration_seconds: number; lyrics: string }; provider_task_id?: string | null; result?: { audio_url?: string; lyrics?: string; metadata?: Record<string, unknown> } | null; error?: string | null; estimate_note?: string; max_cost_usd?: number };
+type SongJob = { id: string; kind: string; status: string; quote_usd: number; payload: { title: string; prompt: string; genre: string; mood: string; language: string; duration_seconds: number; lyrics: string; master_preset?: string; instrumental?: boolean }; provider_task_id?: string | null; result?: { audio_url?: string; lyrics?: string; metadata?: Record<string, unknown>; files?: Record<string, string>; mastering?: unknown } | null; warnings?: string[]; error?: string | null; estimate_note?: string; max_cost_usd?: number };
 type VideoJob = { id: string; kind: string; status: string; quote_usd: number; payload: { prompt: string; duration: number; size: string }; provider_task_id?: string | null; result?: { video_urls?: string[] } | null; error?: string | null; estimate_note?: string; max_cost_usd?: number };
 type MediaJob = { id: string; kind: string; status: string; payload: { song_job_id: string; video_job_id: string }; result?: { formats?: string[]; duration_seconds?: number; lyrics_available?: boolean } | null; error?: string | null };
 
@@ -51,38 +51,64 @@ function ProviderConnector({ providers, onSaved }: { providers: Provider[]; onSa
   return <div className="provider-connect"><div className="connect-heading"><b>Свържи или обнови доставчик</b><small>Ключът не се връща обратно от backend.</small></div><label>Доставчик<select value={provider} onChange={(event) => setProvider(event.target.value as typeof provider)}><option value="novita">Novita</option><option value="openrouter">OpenRouter</option><option value="nvidia">NVIDIA NIM</option><option value="huggingface">Hugging Face</option></select></label><label>API ключ<input type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} autoComplete="new-password" placeholder="Постави нов или завъртян ключ" /></label><label>Model ID<input value={model} onChange={(event) => setModel(event.target.value)} placeholder="ID от каталога на доставчика" /></label><div className="form-grid"><label>Вход · USD / 1M токена<input type="number" min="0" step="0.0001" value={inputRate} onChange={(event) => setInputRate(Number(event.target.value))} /></label><label>Изход · USD / 1M токена<input type="number" min="0" step="0.0001" value={outputRate} onChange={(event) => setOutputRate(Number(event.target.value))} /></label></div>{provider === "novita" && <label>Wan 2.2 · USD / секунда<input type="number" min="0" step="0.001" value={videoRate} onChange={(event) => setVideoRate(Number(event.target.value))} /></label>}<button className="primary-button" disabled={saving || apiKey.trim().length < 8 || !model.trim()} onClick={() => void saveProvider()}>{saving ? "Запазване…" : "Запази ключа и модела"}</button>{notice && <p className={`inline-notice ${failed ? "error-text" : ""}`} role={failed ? "alert" : "status"}>{notice}</p>}</div>;
 }
 
+type Loudness = { integrated_lufs: number; true_peak_dbtp: number; loudness_range_lu: number; duration_seconds: number };
+type Mastering = { preset: string; target: { lufs: number; true_peak: number }; before: Loudness; after: Loudness; compliant: boolean };
+type Readiness = { ready: boolean; reason?: string | null; model?: string; base_url?: string; models?: string[]; lm_enabled?: boolean };
+const stateLabels: Record<string, string> = { awaiting_confirmation: "Чака потвърждение", queued: "На опашка", running: "Генерира се", mastering: "Мастериране", completed: "Готова песен", failed: "Неуспешно" };
+const presetLabels: Record<string, string> = { streaming: "Streaming · −14 LUFS", apple: "Apple Music · −16 LUFS", broadcast: "Broadcast EBU R128 · −23 LUFS" };
+const errorText = (data: { detail?: unknown }, fallbackText: string) => typeof data.detail === "string" ? data.detail : (data.detail as { message?: string } | undefined)?.message || fallbackText;
+
 function MusicStudio({ apiOnline }: { apiOnline: boolean }) {
-  const [prompt, setPrompt] = useState("Мелодична песен за нощно пътуване през неонов град, с надежден и кинематографичен припев.");
-  const [title, setTitle] = useState(""); const [genre, setGenre] = useState("Synthwave"); const [mood, setMood] = useState("Cinematic");
-  const [duration, setDuration] = useState(45); const [language, setLanguage] = useState<"bg" | "en">("bg"); const [lyrics, setLyrics] = useState("");
-  const [readiness, setReadiness] = useState<{ ready: boolean; reason?: string; model?: string; base_url?: string; models?: string[] }>({ ready: false });
-  const [engineUrl, setEngineUrl] = useState("http://127.0.0.1:8001"); const [engineModel, setEngineModel] = useState("acestep-v15-turbo"); const [engineKey, setEngineKey] = useState(""); const [engineRate, setEngineRate] = useState(0); const [engineSaving, setEngineSaving] = useState(false); const [engineNotice, setEngineNotice] = useState("");
-  const [job, setJob] = useState<SongJob | null>(null); const [busy, setBusy] = useState(false); const [error, setError] = useState("");
+  const [prompt, setPrompt] = useState("Мелодична песен за нощно пътуване през неонов град, топли аналогови синтезатори, пулсиращ бас, емоционален вокал.");
+  const [title, setTitle] = useState(""); const [genre, setGenre] = useState("Synthwave pop"); const [mood, setMood] = useState("Cinematic, hopeful");
+  const [duration, setDuration] = useState(90); const [language, setLanguage] = useState<"bg" | "en">("bg"); const [lyrics, setLyrics] = useState("");
+  const [instrumental, setInstrumental] = useState(false); const [bpm, setBpm] = useState(""); const [keyScale, setKeyScale] = useState(""); const [timeSignature, setTimeSignature] = useState(""); const [seed, setSeed] = useState(""); const [preset, setPreset] = useState("streaming");
+  const [readiness, setReadiness] = useState<Readiness>({ ready: false });
+  const [engineUrl, setEngineUrl] = useState("http://127.0.0.1:8001"); const [engineModel, setEngineModel] = useState("acestep-v15-turbo"); const [engineKey, setEngineKey] = useState(""); const [engineRate, setEngineRate] = useState(0); const [engineLm, setEngineLm] = useState(false); const [engineSaving, setEngineSaving] = useState(false); const [engineNotice, setEngineNotice] = useState("");
+  const [job, setJob] = useState<SongJob | null>(null); const [busy, setBusy] = useState(false); const [error, setError] = useState(""); const [warnings, setWarnings] = useState<string[]>([]);
+  const [lyricsBusy, setLyricsBusy] = useState(false); const [lyricsNotice, setLyricsNotice] = useState(""); const [history, setHistory] = useState<SongJob[]>([]);
+
+  const loadHistory = () => fetch("/api/v1/jobs?kind=song&limit=8").then((response) => response.ok ? response.json() : { jobs: [] }).then((data) => setHistory(data.jobs || [])).catch(() => undefined);
 
   useEffect(() => {
     let alive = true;
-    void fetch("/api/v1/music/readiness").then((response) => response.json()).then((data) => { if (alive) { setReadiness(data); setEngineUrl(data.base_url || "http://127.0.0.1:8001"); setEngineModel(data.model || "acestep-v15-turbo"); } }).catch(() => { if (alive) setReadiness({ ready: false, reason: "Backend не е достъпен." }); });
+    void fetch("/api/v1/music/readiness").then((response) => response.json()).then((data: Readiness) => { if (alive) { setReadiness(data); setEngineUrl(data.base_url || "http://127.0.0.1:8001"); setEngineModel(data.model || "acestep-v15-turbo"); setEngineLm(Boolean(data.lm_enabled)); } }).catch(() => { if (alive) setReadiness({ ready: false, reason: "Backend не е достъпен." }); });
     const savedId = window.localStorage.getItem("meloforge.latestSongJob");
     if (savedId) void fetch(`/api/v1/jobs/${savedId}`).then((response) => response.ok ? response.json() : null).then((data) => { if (alive && data?.kind === "song") setJob(data); }).catch(() => undefined);
+    void loadHistory();
     return () => { alive = false; };
   }, []);
 
   useEffect(() => {
-    if (!job || job.status !== "running") return;
+    if (!job || !["running", "queued", "mastering"].includes(job.status)) return;
     const timer = window.setTimeout(async () => {
-      try { const response = await fetch(`/api/v1/jobs/${job.id}`); if (response.ok) setJob(await response.json()); }
+      try { const response = await fetch(`/api/v1/jobs/${job.id}`); if (response.ok) { const next = await response.json(); setJob(next); if (next.status === "completed" || next.status === "failed") void loadHistory(); } }
       catch { /* A temporary polling error leaves the job available for the next refresh. */ }
     }, 3000);
     return () => window.clearTimeout(timer);
   }, [job]);
 
-  async function quoteSong() {
-    setBusy(true); setError(""); setJob(null);
+  async function draftLyrics() {
+    setLyricsBusy(true); setLyricsNotice("");
     try {
-      const response = await fetch("/api/v1/jobs/song/quote", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title, prompt, genre, mood, language, duration_seconds: duration, lyrics }) });
+      const response = await fetch("/api/v1/music/lyrics", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt, title, genre, mood, language, duration_seconds: duration }) });
       const data = await response.json();
-      if (!response.ok) throw new Error(typeof data.detail === "string" ? data.detail : "Неуспешна ценова оценка.");
-      setJob(data); window.localStorage.setItem("meloforge.latestSongJob", data.id);
+      if (!response.ok) throw new Error(errorText(data, "Текстът не беше генериран."));
+      setLyrics(data.lyrics); setInstrumental(false);
+      setLyricsNotice(`Текст от ${data.provider} · ${data.model}${data.estimated_cost_usd ? ` · ~$${Number(data.estimated_cost_usd).toFixed(4)}` : " · $0"}. Прегледай и редактирай преди генериране.`);
+    } catch (caught) { setLyricsNotice(caught instanceof Error ? caught.message : "Текстът не беше генериран."); }
+    finally { setLyricsBusy(false); }
+  }
+
+  async function quoteSong() {
+    setBusy(true); setError(""); setJob(null); setWarnings([]);
+    const body: Record<string, unknown> = { title, prompt, genre, mood, language, duration_seconds: duration, lyrics: instrumental ? "" : lyrics, instrumental, master_preset: preset };
+    if (bpm) body.bpm = Number(bpm); if (keyScale.trim()) body.key_scale = keyScale.trim(); if (timeSignature) body.time_signature = timeSignature; if (seed) body.seed = Number(seed);
+    try {
+      const response = await fetch("/api/v1/jobs/song/quote", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(Array.isArray(data.detail) ? "Провери полетата (BPM 30–300, тоналност напр. „A minor“)." : errorText(data, "Неуспешна ценова оценка."));
+      setJob(data); setWarnings(data.warnings || []); window.localStorage.setItem("meloforge.latestSongJob", data.id);
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Неуспешна проверка на ACE-Step."); }
     finally { setBusy(false); }
   }
@@ -90,9 +116,9 @@ function MusicStudio({ apiOnline }: { apiOnline: boolean }) {
   async function configureEngine() {
     setEngineSaving(true); setEngineNotice("");
     try {
-      const response = await fetch("/api/v1/music/configure", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ base_url: engineUrl, model: engineModel, api_key: engineKey || null, cost_per_second_usd: engineRate }) });
+      const response = await fetch("/api/v1/music/configure", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ base_url: engineUrl, model: engineModel, api_key: engineKey || null, cost_per_second_usd: engineRate, lm_enabled: engineLm }) });
       const data = await response.json();
-      if (!response.ok) throw new Error(typeof data.detail === "string" ? data.detail : "ACE-Step настройките не бяха запазени.");
+      if (!response.ok) throw new Error(errorText(data, "ACE-Step настройките не бяха запазени."));
       setReadiness(data.readiness); setEngineKey(""); setEngineNotice(data.readiness.ready ? "ACE-Step е свързан и готов." : "Настройката е запазена. Стартирай endpoint и зареди избрания модел.");
     } catch (caught) { setEngineNotice(caught instanceof Error ? caught.message : "Настройката не беше запазена."); }
     finally { setEngineSaving(false); }
@@ -103,14 +129,42 @@ function MusicStudio({ apiOnline }: { apiOnline: boolean }) {
     setBusy(true); setError("");
     try {
       const response = await fetch(`/api/v1/jobs/${job.id}/confirm`, { method: "POST" }); const data = await response.json();
-      if (!response.ok) throw new Error(typeof data.detail === "string" ? data.detail : "ACE-Step не прие задачата.");
+      if (!response.ok) throw new Error(errorText(data, "ACE-Step не прие задачата."));
       setJob(data);
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Неуспешно изпращане към ACE-Step."); }
     finally { setBusy(false); }
   }
 
-  const stateLabel = job?.status === "awaiting_confirmation" ? "Чака потвърждение" : job?.status === "queued" ? "На опашка" : job?.status === "running" ? "Генерира се" : job?.status === "completed" ? "Готова песен" : "Неуспешно";
-  return <section className="studio-layout"><div className="studio-intro"><small className="eyebrow">SONG BUILDER</small><h2>Текст и музика<br /><span>в един поток.</span></h2><p>ACE-Step генерира песента и може да напише текста, ако оставиш полето празно. Първо се проверява моделът и цената; заявката се изпраща само след потвърждение.</p><div className="safety-strip"><ShieldCheck /> Ключът се предава локално и се пази криптиран за този Windows профил.</div><div className="preflight"><b>{readiness.model || "ACE-Step"}</b><span className={readiness.ready ? "good" : "warn"}>{readiness.ready ? "Свързан и готов" : "Не е готов"}</span></div>{!readiness.ready && <p className="inline-notice">{readiness.reason || "Настрой endpoint и стартирай ACE-Step."}</p>}</div><div className="panel composer"><details className="engine-settings" open={!readiness.ready}><summary>Настрой музикалния engine</summary><p>Инсталирай и стартирай ACE-Step 1.5 API. За локален адрес не се начислява API цена; отдалечен endpoint изисква зададена тарифа.</p><label>ACE-Step API адрес<input value={engineUrl} onChange={(event) => setEngineUrl(event.target.value)} placeholder="http://127.0.0.1:8001" /></label><label>Модел<select value={engineModel} onChange={(event) => setEngineModel(event.target.value)}>{readiness.models?.length ? readiness.models.map((name) => <option key={name} value={name}>{name}</option>) : <option value={engineModel}>{engineModel}</option>}</select></label><label>API ключ <span>по избор</span><input type="password" value={engineKey} onChange={(event) => setEngineKey(event.target.value)} autoComplete="new-password" placeholder="Ключ за private endpoint" /></label><label>Цена · USD / секунда<input type="number" min="0" step="0.001" value={engineRate} onChange={(event) => setEngineRate(Number(event.target.value))} /></label><button className="primary-button" disabled={engineSaving || !engineUrl.trim() || !engineModel.trim()} onClick={() => void configureEngine()}>{engineSaving ? "Запазване…" : "Запази и провери връзката"}</button>{engineNotice && <p className="inline-notice" role="status">{engineNotice}</p>}</details><div className="form-grid"><label>Заглавие<input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={120} placeholder="По желание" /></label><label>Език на текста<select value={language} onChange={(event) => setLanguage(event.target.value as "bg" | "en")}><option value="bg">Български</option><option value="en">English</option></select></label></div><label>Идея за песента<textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} maxLength={1200} /></label><div className="form-grid"><label>Жанр<input value={genre} onChange={(event) => setGenre(event.target.value)} maxLength={80} /></label><label>Настроение<input value={mood} onChange={(event) => setMood(event.target.value)} maxLength={80} /></label></div><label>Текст на песента <span>празно = генерирай автоматично</span><textarea className="lyrics-input" value={lyrics} onChange={(event) => setLyrics(event.target.value)} maxLength={10000} placeholder="Можеш да добавиш свой текст на български или английски…" /></label><label>Дължина <span>{duration} сек.</span><input className="slider" type="range" min="10" max="180" step="5" value={duration} onChange={(event) => setDuration(Number(event.target.value))} /></label><button className="primary-button large" disabled={!apiOnline || !readiness.ready || busy || prompt.trim().length < 3} onClick={() => void quoteSong()}><WandSparkles size={17} />{busy ? "Проверка…" : "Изчисли цена"}</button>{!apiOnline && <p className="inline-notice">Backend е офлайн.</p>}{error && <p className="inline-notice error-text" role="alert">{error}</p>}{job && <div className="job-card"><div className="job-head"><span className={`job-state ${job.status}`}>{stateLabel}</span><strong>${job.quote_usd.toFixed(4)}</strong></div><p>{job.estimate_note || `ACE-Step · ${job.payload.duration_seconds}s · ${job.payload.language === "bg" ? "български" : "English"}`}</p>{job.status === "awaiting_confirmation" && <button className="primary-button large" disabled={busy} onClick={() => void confirmSong()}><ShieldCheck size={17} />Потвърди и създай песента</button>}{job.status === "running" && <p className="inline-notice">ACE-Step задача {job.provider_task_id || "изпратена"}. Проверявам статуса автоматично.</p>}{job.status === "failed" && <p className="inline-notice error-text">{job.error || "Генерацията не беше успешна."}</p>}{job.status === "completed" && job.result?.audio_url && <><audio className="generated-audio" src={job.result.audio_url} controls /><details className="lyrics-result"><summary>Покажи текста на песента</summary><pre>{job.result.lyrics || job.payload.lyrics || "ACE-Step не върна текст в резултата."}</pre></details></>}</div>}</div></section>;
+  const needsLyrics = !instrumental && !lyrics.trim() && !readiness.lm_enabled;
+  const files = job?.result?.files || {};
+  const mastering = job?.result?.mastering as Mastering | undefined;
+  const songTitle = (candidate: SongJob) => candidate.payload.title || candidate.payload.prompt.slice(0, 42);
+  return <section className="studio-layout"><div className="studio-intro"><small className="eyebrow">SONG BUILDER</small><h2>Текст и музика<br /><span>в един поток.</span></h2><p>ACE-Step генерира песента от стил, текст и музикални параметри. Готовият запис се мастерира по стандартите за streaming (LUFS / true peak) и се изнася като WAV 24-bit и MP3 320 kbps с вграден текст.</p><div className="safety-strip"><ShieldCheck /> Нищо не се изпраща преди потвърждение на офертата. Локалният ACE-Step е безплатен.</div><div className="preflight"><b>{readiness.model || "ACE-Step"}</b><span className={readiness.ready ? "good" : "warn"}>{readiness.ready ? "Свързан и готов" : "Не е готов"}</span><span className={readiness.lm_enabled ? "good" : "off"}>{readiness.lm_enabled ? "5Hz LM: авто текст" : "Без 5Hz LM"}</span></div>{!readiness.ready && <p className="inline-notice">{readiness.reason || "Настрой endpoint и стартирай ACE-Step."}</p>}
+    {history.length > 0 && <div className="song-history"><small className="eyebrow">ПОСЛЕДНИ ПЕСНИ</small>{history.map((item) => <button key={item.id} className={item.id === job?.id ? "active" : ""} onClick={() => { setJob(item); setWarnings([]); window.localStorage.setItem("meloforge.latestSongJob", item.id); }}><b>{songTitle(item)}</b><span className={`job-state ${item.status}`}>{stateLabels[item.status] || item.status}</span></button>)}</div>}
+  </div><div className="panel composer"><details className="engine-settings" open={!readiness.ready}><summary>Настрой музикалния engine</summary><p>Инсталирай и стартирай ACE-Step 1.5 API. За локален адрес не се начислява API цена; отдалечен endpoint изисква зададена тарифа.</p><label>ACE-Step API адрес<input value={engineUrl} onChange={(event) => setEngineUrl(event.target.value)} placeholder="http://127.0.0.1:8001" /></label><label>Модел<select value={engineModel} onChange={(event) => setEngineModel(event.target.value)}>{readiness.models?.length ? readiness.models.map((name) => <option key={name} value={name}>{name}</option>) : <option value={engineModel}>{engineModel}</option>}</select></label><label>API ключ <span>по избор</span><input type="password" value={engineKey} onChange={(event) => setEngineKey(event.target.value)} autoComplete="new-password" placeholder="Ключ за private endpoint" /></label><label>Цена · USD / секунда<input type="number" min="0" step="0.001" value={engineRate} onChange={(event) => setEngineRate(Number(event.target.value))} /></label><label className="checkline"><input type="checkbox" checked={engineLm} onChange={(event) => setEngineLm(event.target.checked)} /> ACE-Step е стартиран с 5Hz LM (ACESTEP_INIT_LLM=true) — автоматичен текст и „thinking“</label><button className="primary-button" disabled={engineSaving || !engineUrl.trim() || !engineModel.trim()} onClick={() => void configureEngine()}>{engineSaving ? "Запазване…" : "Запази и провери връзката"}</button>{engineNotice && <p className="inline-notice" role="status">{engineNotice}</p>}</details>
+    <div className="form-grid"><label>Заглавие<input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={120} placeholder="По желание" /></label><label>Език на текста<select value={language} onChange={(event) => setLanguage(event.target.value as "bg" | "en")}><option value="bg">Български</option><option value="en">English</option></select></label></div>
+    <label>Стил и звучене <span>инструменти, вокал, емоция</span><textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} maxLength={1200} /></label>
+    <div className="form-grid"><label>Жанр<input value={genre} onChange={(event) => setGenre(event.target.value)} maxLength={80} /></label><label>Настроение<input value={mood} onChange={(event) => setMood(event.target.value)} maxLength={80} /></label></div>
+    <label className="checkline"><input type="checkbox" checked={instrumental} onChange={(event) => setInstrumental(event.target.checked)} /> Инструментал (без вокал)</label>
+    {!instrumental && <label>Текст на песента <span>{readiness.lm_enabled ? "празно = ACE-Step пише сам" : "тагове [Verse] / [Chorus] се добавят автоматично"}</span><textarea className="lyrics-input" value={lyrics} onChange={(event) => setLyrics(event.target.value)} maxLength={10000} placeholder={"[Verse 1]\nПърви куплет…\n\n[Chorus]\nПрипев…"} /></label>}
+    {!instrumental && <button className="secondary-button" disabled={!apiOnline || lyricsBusy || prompt.trim().length < 3} onClick={() => void draftLyrics()}><Sparkles size={15} />{lyricsBusy ? "Пиша текст…" : "Напиши текст с AI"}</button>}
+    {lyricsNotice && <p className="inline-notice" role="status">{lyricsNotice}</p>}
+    <label>Дължина <span>{Math.floor(duration / 60)}:{String(duration % 60).padStart(2, "0")} мин.</span><input className="slider" type="range" min="10" max="300" step="5" value={duration} onChange={(event) => setDuration(Number(event.target.value))} /></label>
+    <details className="engine-settings"><summary>Музикални параметри и мастеринг</summary><div className="form-grid"><label>BPM <span>30–300</span><input type="number" min="30" max="300" value={bpm} onChange={(event) => setBpm(event.target.value)} placeholder="авто" /></label><label>Тоналност<input value={keyScale} onChange={(event) => setKeyScale(event.target.value)} maxLength={24} placeholder="напр. A minor" /></label><label>Размер<select value={timeSignature} onChange={(event) => setTimeSignature(event.target.value)}><option value="">авто</option><option value="4">4/4</option><option value="3">3/4</option><option value="6">6/8</option><option value="2">2/4</option></select></label><label>Seed <span>за повторяемост</span><input type="number" min="0" value={seed} onChange={(event) => setSeed(event.target.value)} placeholder="случаен" /></label></div><label>Мастеринг стандарт<select value={preset} onChange={(event) => setPreset(event.target.value)}>{Object.entries(presetLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label></details>
+    <button className="primary-button large" disabled={!apiOnline || !readiness.ready || busy || prompt.trim().length < 3 || needsLyrics} onClick={() => void quoteSong()}><WandSparkles size={17} />{busy ? "Проверка…" : "Изчисли цена"}</button>
+    {needsLyrics && readiness.ready && <p className="inline-notice">Въведи текст, натисни „Напиши текст с AI“ или избери инструментал — този ACE-Step работи без 5Hz LM.</p>}
+    {!apiOnline && <p className="inline-notice">Backend е офлайн.</p>}{error && <p className="inline-notice error-text" role="alert">{error}</p>}
+    {job && <div className="job-card"><div className="job-head"><span className={`job-state ${job.status}`}>{stateLabels[job.status] || job.status}</span><strong>${job.quote_usd.toFixed(4)}</strong></div><p>{job.estimate_note || `ACE-Step · ${job.payload.duration_seconds}s · ${job.payload.language === "bg" ? "български" : "English"}`}</p>
+      {warnings.map((warning) => <p key={warning} className="inline-notice warn-text">⚠ {warning}</p>)}
+      {job.status === "awaiting_confirmation" && <button className="primary-button large" disabled={busy} onClick={() => void confirmSong()}><ShieldCheck size={17} />Потвърди и създай песента</button>}
+      {job.status === "running" && <p className="inline-notice">ACE-Step генерира… проверявам статуса автоматично.</p>}
+      {job.status === "mastering" && <p className="inline-notice">Песента е готова — мастериране по {presetLabels[job.payload.master_preset || "streaming"] || "streaming стандарт"}…</p>}
+      {job.status === "failed" && <p className="inline-notice error-text">{job.error || "Генерацията не беше успешна."}</p>}
+      {job.status === "completed" && (files.mp3 || job.result?.audio_url) && <><audio className="generated-audio" src={files.mp3 || job.result?.audio_url} controls />
+        {mastering && <div className="master-meter"><span><b>{mastering.after.integrated_lufs.toFixed(1)}</b> LUFS</span><span><b>{mastering.after.true_peak_dbtp.toFixed(1)}</b> dBTP</span><span><b>{mastering.after.loudness_range_lu.toFixed(1)}</b> LU LRA</span><span><b>{mastering.after.duration_seconds.toFixed(0)}</b> сек.</span><em className={mastering.compliant ? "good" : "warn"}>{mastering.compliant ? `Отговаря на ${presetLabels[mastering.preset] || mastering.preset}` : "Извън целевия диапазон"}</em></div>}
+        <div className="download-row">{files.mp3 && <a href={files.mp3} download>MP3 320k</a>}{files.wav && <a href={files.wav} download>WAV 24-bit</a>}{files.lyrics && <a href={files.lyrics} download>Текст TXT</a>}{files.raw && <a href={files.raw} download>Оригинал</a>}</div>
+        <details className="lyrics-result"><summary>Покажи текста на песента</summary><pre>{job.result?.lyrics || job.payload.lyrics || "ACE-Step не върна текст в резултата."}</pre></details></>}
+    </div>}</div></section>;
 }
 function VideoStudio({ apiOnline, checks }: { apiOnline: boolean; checks: Check[] }) {
   const ffmpeg = checks.find((check) => check.id === "ffmpeg");

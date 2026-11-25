@@ -1,10 +1,11 @@
+import asyncio
 import logging
 import shutil
 import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -14,6 +15,7 @@ from app.schemas import (
     AceStepConfigUpdate,
     ChatRequest,
     ComposeRequest,
+    LyricsDraftRequest,
     ProviderConfigUpdate,
     RuntimeSettingsUpdate,
     SongRequest,
@@ -27,6 +29,12 @@ from app.services.ace_step import song_status as ace_step_song_status
 from app.services.ace_step import submit_song as ace_step_submit_song
 from app.services.composer import compose_song_video, lyrics_path, output_path
 from app.services.hardware import get_hardware_status, local_tool_status
+from app.services.lyrics import (
+    clean_generated_lyrics,
+    lyric_warnings,
+    lyrics_writer_messages,
+    structure_lyrics,
+)
 from app.services.providers import (
     create_chat_completion,
     novita_create_video,
@@ -41,6 +49,7 @@ from app.services.runtime_settings import (
     update_runtime_preferences,
 )
 from app.services.secret_store import store_secret
+from app.services.songs import finalize_song, song_file
 
 settings = get_settings()
 logger = logging.getLogger("meloforge")
@@ -116,6 +125,7 @@ async def configure_music_engine(payload: AceStepConfigUpdate):
         "ace_step_base_url": base_url,
         "ace_step_model": payload.model.strip(),
         "ace_step_cost_per_second_usd": payload.cost_per_second_usd,
+        "ace_step_lm_enabled": payload.lm_enabled,
     }
     try:
         update_provider_preferences(settings, "ace_step", safe_values)
@@ -187,7 +197,7 @@ async def music_readiness():
         if model:
             model = str(model).rsplit("/", 1)[-1]
         ready = bool(names and model in names)
-        return {"ready": ready, "model": model, "models": names, "base_url": settings.ace_step_base_url, "reason": None if ready else "Избраният ACE-Step модел не е зареден."}
+        return {"ready": ready, "model": model, "models": names, "base_url": settings.ace_step_base_url, "lm_enabled": settings.ace_step_lm_enabled, "reason": None if ready else "Избраният ACE-Step модел не е зареден."}
     except Exception:
         return {"ready": False, "reason": "ACE-Step API не отговаря. Провери адреса и дали услугата работи.", "models": [], "base_url": settings.ace_step_base_url, "model": settings.ace_step_model}
 
@@ -242,22 +252,71 @@ async def create_song_quote(request: SongRequest):
     if estimate > budget:
         raise HTTPException(402, f"Оценката ${estimate:.4f} надхвърля лимита ${budget:.2f}.")
     payload = request.model_dump(exclude={"max_cost_usd"})
+    warnings: list[str] = []
+    if request.instrumental:
+        payload["lyrics"] = "[Instrumental]"
+    elif request.lyrics.strip():
+        structured = structure_lyrics(request.lyrics)
+        if structured != request.lyrics.strip():
+            warnings.append("Текстът нямаше секции; добавени са [Verse]/[Chorus] тагове за ACE-Step.")
+        payload["lyrics"] = structured
+        warnings += lyric_warnings(structured, request.duration_seconds)
+    elif not settings.ace_step_lm_enabled:
+        raise HTTPException(409, "ACE-Step работи без езиковия си модел (5Hz LM) и не може сам да напише текст. Въведи текст, използвай „Напиши текст с AI“ или избери инструментал.")
     payload["_ace_step_model"] = model
     job = jobs.create("song", payload, estimate)
     note = "Локален ACE-Step; не се таксува API." if local_endpoint else "Отдалечена ACE-Step тарифа от .env плюс 25% резерв."
-    return {**job.__dict__, "max_cost_usd": budget, "estimate_note": f"{note} Потвърди преди изпращане."}
+    return {**job.__dict__, "max_cost_usd": budget, "warnings": warnings, "estimate_note": f"{note} Потвърди преди изпращане."}
+
+
+@app.post("/api/v1/music/lyrics")
+async def draft_lyrics(request: LyricsDraftRequest):
+    """Draft ACE-Step-tagged lyrics with the routed LLM (local first, budget-gated cloud)."""
+    messages = lyrics_writer_messages(prompt=request.prompt, genre=request.genre, mood=request.mood, language=request.language, duration_seconds=request.duration_seconds, title=request.title)
+    chat_request = ChatRequest(messages=messages, provider=request.provider, max_output_tokens=min(2048, 300 + request.duration_seconds * 6), max_cost_usd=request.max_cost_usd)
+    try:
+        selected, decision = choose_provider(chat_request, settings)
+        result = await create_chat_completion(selected, messages, chat_request.max_output_tokens)
+    except RoutingError as exc:
+        raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": exc.message}) from exc
+    except Exception:
+        raise HTTPException(502, {"code": "provider_error", "message": "LLM доставчикът не върна текст. Провери модела и логовете."})
+    lyrics = clean_generated_lyrics(result.get("content") or "")
+    if not lyrics:
+        raise HTTPException(502, {"code": "empty_lyrics", "message": "Моделът върна празен текст."})
+    return {"lyrics": lyrics, "provider": selected.name, "model": selected.model, "estimated_cost_usd": decision["estimated_cost_usd"], "warnings": lyric_warnings(lyrics, request.duration_seconds)}
+
+@app.get("/api/v1/jobs")
+async def list_jobs(kind: str | None = Query(default=None, pattern="^(song|video|composition)$"), limit: int = Query(default=20, ge=1, le=200)):
+    return {"jobs": jobs.list_recent(kind=kind, limit=limit)}
+
+
+@app.get("/api/v1/songs/{job_id}/{kind}")
+async def download_song(job_id: str, kind: str):
+    job = jobs.get(job_id)
+    if not job or job.kind != "song" or job.status != "completed":
+        raise HTTPException(404, "Готовата песен не е намерена.")
+    found = song_file(job.id, kind)
+    if not found or not found[0].is_file():
+        raise HTTPException(404, "Файлът не е наличен.")
+    path, media_type = found
+    title = "".join(ch for ch in (job.payload.get("title") or "MeloForge-song") if ch.isalnum() or ch in " -_").strip() or "MeloForge-song"
+    return FileResponse(path, media_type=media_type, filename=f"{title}{path.suffix}" if kind in {"mp3", "wav", "raw"} else path.name)
+
 
 @app.get("/api/v1/jobs/{job_id}")
 async def get_job(job_id: str):
     job = jobs.get(job_id)
-    if not job: raise HTTPException(404, "Задачата не е намерена.")
+    if not job:
+        raise HTTPException(404, "Задачата не е намерена.")
     if job.kind == "song" and job.status == "running" and job.provider_task_id:
         try:
             provider_result = await ace_step_song_status(_ace_step_config(), job.provider_task_id)
             if provider_result["status"] == 1:
                 if provider_result.get("audio_url"):
                     result = {key: provider_result[key] for key in ("audio_url", "lyrics", "metadata")}
-                    job = jobs.update(job.id, status="completed", result=result) or job
+                    job = jobs.update(job.id, status="mastering", result=result) or job
+                    _start_finalize(job.id)
                 else:
                     job = jobs.update(job.id, status="failed", error="ACE-Step приключи задачата, но не върна аудио файл.") or job
             elif provider_result["status"] == 2:
@@ -265,6 +324,9 @@ async def get_job(job_id: str):
         except Exception:
             # Provider polling is read-only; transient failures leave the job recoverable.
             pass
+    elif job.kind == "song" and job.status == "mastering":
+        # Resume after a restart; the in-memory guard prevents duplicate work.
+        _start_finalize(job.id)
     if job.kind == "video" and job.status == "running" and job.provider_task_id:
         try:
             provider_result = await novita_video_status(settings, job.provider_task_id)
@@ -283,30 +345,13 @@ async def get_job(job_id: str):
 @app.post("/api/v1/jobs/{job_id}/confirm")
 async def confirm_job(job_id: str):
     job = jobs.confirm(job_id)
-    if not job: raise HTTPException(409, "Задачата не чака потвърждение.")
+    if not job:
+        raise HTTPException(409, "Задачата не чака потвърждение.")
     try:
         if job.kind == "song":
             request_data = job.payload.copy()
             model = request_data.pop("_ace_step_model", settings.ace_step_model)
-            lyrics = request_data.get("lyrics", "").strip()
-            prompt_parts = [request_data.get("prompt", ""), request_data.get("genre", ""), request_data.get("mood", "")]
-            music_prompt = ", ".join(part for part in prompt_parts if part)
-            provider_payload = {
-                "task_type": "text2music",
-                "prompt": music_prompt,
-                "vocal_language": request_data.get("language", "bg"),
-                "audio_duration": request_data.get("duration_seconds", 45),
-                "audio_format": "mp3",
-                "model": model,
-                "thinking": not bool(lyrics),
-                "inference_steps": 8,
-                "batch_size": 1,
-            }
-            if lyrics:
-                provider_payload["lyrics"] = lyrics
-            else:
-                provider_payload["sample_mode"] = True
-                provider_payload["sample_query"] = music_prompt
+            provider_payload = build_ace_step_payload(request_data, model, lm_enabled=settings.ace_step_lm_enabled)
             provider_result = await ace_step_submit_song(_ace_step_config(), provider_payload)
             updated_payload = {**request_data, "model": model}
             return jobs.update(job.id, status="running", provider_task_id=provider_result["task_id"], payload=updated_payload)
@@ -327,6 +372,64 @@ async def confirm_job(job_id: str):
         raise HTTPException(502, message)
 
 
+def build_ace_step_payload(request_data: dict, model: str, *, lm_enabled: bool) -> dict:
+    """Translate a confirmed SongRequest into ACE-Step 1.5 /release_task parameters."""
+    lyrics = (request_data.get("lyrics") or "").strip()
+    genre, mood = request_data.get("genre", ""), request_data.get("mood", "")
+    # ACE-Step guidance: caption = style/emotion/instruments; tempo and key go in metadata fields.
+    caption = ", ".join(part for part in [genre, mood, request_data.get("prompt", "")] if part)
+    payload = {
+        "task_type": "text2music",
+        "prompt": caption,
+        "vocal_language": request_data.get("language", "bg"),
+        "audio_duration": request_data.get("duration_seconds", 45),
+        # Lossless from the engine; MeloForge produces the MP3/WAV deliverables itself.
+        "audio_format": "wav",
+        "model": model,
+        "thinking": lm_enabled,
+        "use_cot_caption": lm_enabled,
+        "use_cot_language": lm_enabled,
+        "inference_steps": int(request_data.get("inference_steps") or 8),
+        "batch_size": 1,
+    }
+    if lyrics:
+        payload["lyrics"] = lyrics
+    elif lm_enabled:
+        payload["sample_mode"] = True
+        payload["sample_query"] = caption
+    if request_data.get("bpm"):
+        payload["bpm"] = int(request_data["bpm"])
+    if request_data.get("key_scale"):
+        payload["key_scale"] = request_data["key_scale"]
+    if request_data.get("time_signature"):
+        payload["time_signature"] = str(request_data["time_signature"])
+    if request_data.get("seed") is not None:
+        payload["use_random_seed"] = False
+        payload["seed"] = int(request_data["seed"])
+    return payload
+
+
+_finalizing: set[str] = set()
+
+
+async def _finalize_song_job(job_id: str) -> None:
+    try:
+        result = await asyncio.to_thread(finalize_song, job_id, ace_step_base_url=settings.ace_step_base_url, ace_step_api_key=settings.ace_step_api_key)
+        jobs.update(job_id, status="completed", result=result)
+    except Exception as exc:
+        logger.error("Song finalisation %s failed (%s: %s)", job_id, type(exc).__name__, exc)
+        jobs.update(job_id, status="failed", error="Песента е генерирана, но не беше изтеглена или мастерирана. Провери FFmpeg и ACE-Step.")
+    finally:
+        _finalizing.discard(job_id)
+
+
+def _start_finalize(job_id: str) -> None:
+    if job_id in _finalizing:
+        return
+    _finalizing.add(job_id)
+    asyncio.get_running_loop().create_task(_finalize_song_job(job_id))
+
+
 def _run_composition(job_id: str, song_job_id: str, video_job_id: str) -> None:
     try:
         song = jobs.get(song_job_id)
@@ -341,9 +444,11 @@ def _run_composition(job_id: str, song_job_id: str, video_job_id: str) -> None:
         ffmpeg = shutil.which("ffmpeg")
         if not ffmpeg:
             raise ValueError("FFmpeg is not installed.")
+        mastered = song_file(song.id, "mp3")
         result = compose_song_video(
             job_id,
             audio_url=audio_url,
+            local_audio=mastered[0] if mastered and mastered[0].is_file() else None,
             video_url=video_urls[0],
             duration_seconds=int(song.payload.get("duration_seconds", 0)),
             lyrics=lyrics,
@@ -378,6 +483,17 @@ async def create_composition(request: ComposeRequest, background_tasks: Backgrou
     return jobs.get(composition.id)
 
 
+@app.get("/api/v1/media/{job_id}/lyrics")
+async def download_composition_lyrics(job_id: str):
+    job = jobs.get(job_id)
+    if not job or job.kind != "composition" or job.status != "completed":
+        raise HTTPException(404, "Текстът не е намерен.")
+    target = lyrics_path(job.id)
+    if not target.is_file():
+        raise HTTPException(404, "За тази песен няма наличен текстов файл.")
+    return FileResponse(target, media_type="text/plain; charset=utf-8", filename="lyrics.txt")
+
+
 @app.get("/api/v1/media/{job_id}/{aspect}")
 async def download_composition(job_id: str, aspect: str):
     job = jobs.get(job_id)
@@ -392,17 +508,6 @@ async def download_composition(job_id: str, aspect: str):
     return FileResponse(target, media_type="video/mp4", filename=f"MeloForge-{aspect}.mp4")
 
 
-@app.get("/api/v1/media/{job_id}/lyrics")
-async def download_composition_lyrics(job_id: str):
-    job = jobs.get(job_id)
-    if not job or job.kind != "composition" or job.status != "completed":
-        raise HTTPException(404, "Текстът не е намерен.")
-    target = lyrics_path(job.id)
-    if not target.is_file():
-        raise HTTPException(404, "За тази песен няма наличен текстов файл.")
-    return FileResponse(target, media_type="text/plain; charset=utf-8", filename="lyrics.txt")
-
-
 def _video_result(data: dict) -> dict:
     """Keep only user-facing video URLs from a provider status response."""
     urls: list[str] = []
@@ -414,7 +519,8 @@ def _video_result(data: dict) -> dict:
                 else:
                     visit(child)
         elif isinstance(value, list):
-            for child in value: visit(child)
+            for child in value:
+                visit(child)
     visit(data)
     return {"video_urls": list(dict.fromkeys(urls))}
 

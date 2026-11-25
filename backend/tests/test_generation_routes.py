@@ -36,6 +36,8 @@ def test_song_quote_waits_for_confirmation_then_submits_to_ace_step(monkeypatch,
     monkeypatch.setattr(main.settings, "ace_step_enabled", True)
     monkeypatch.setattr(main.settings, "ace_step_base_url", "http://127.0.0.1:8001")
     monkeypatch.setattr(main.settings, "ace_step_model", "acestep-v15-turbo")
+    # Auto-written lyrics (sample mode) need the ACE-Step 5Hz LM to be loaded.
+    monkeypatch.setattr(main.settings, "ace_step_lm_enabled", True)
     calls = []
 
     async def models(_config):

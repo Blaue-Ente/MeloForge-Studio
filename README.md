@@ -98,6 +98,37 @@ MeloForge използва официалния асинхронен ACE-Step 1.
 
 Ако полето за текст е празно, ACE-Step може да генерира текст/структура заедно с песента. Избраният език е български или английски; реалната езикова поддръжка зависи от заредения модел. След готовност на песента и Novita видеото, Video Studio сглобява пълната дължина с повтаряне на кратката сцена, записва 16:9 и 9:16 версии и предлага текста като TXT. Монтажът се изпълнява локално с FFmpeg и не изпраща нова платена заявка.
 
+## Song pipeline и стандарти
+
+1. **Текст.** ACE-Step чете структурата от тагове на отделни редове: `[Intro]`, `[Verse 1]`, `[Pre-Chorus]`, `[Chorus]`, `[Bridge]`, `[Outro]`, `[Instrumental]`. Текст без тагове се структурира автоматично (повтарящ се блок = припев). Предупреждение се показва, ако текстът е твърде дълъг/кратък за избраната дължина.
+2. **Автоматичен текст.** На GPU под ~6 GB ACE-Step стартира без своя 5Hz LM, затова не може сам да напише текст. Бутонът „Напиши текст с AI“ (`POST /api/v1/music/lyrics`) ползва LLM router-а (Ollama първо, cloud само с тарифа и бюджет). Ако ACE-Step е стартиран с `ACESTEP_INIT_LLM=true`, отбележи го в настройките на engine-а — тогава се включват `thinking` и sample mode.
+3. **Музикални параметри.** Caption = стил, инструменти, вокал, емоция. BPM, тоналност, размер и seed се подават като отделни ACE-Step полета (по препоръка на ACE-Step, не в caption).
+4. **Генерация** в lossless WAV от ACE-Step; оригиналът се пази локално в `data/songs/<job>/raw.wav`, така че не зависи от временната папка на ACE-Step.
+5. **Мастеринг** (FFmpeg `loudnorm`, ITU-R BS.1770 / EBU R128, two-pass, linear):
+
+| Preset | Integrated | True peak | Употреба |
+|---|---|---|---|
+| `streaming` (по подразбиране) | −14 LUFS | −1 dBTP | Spotify, YouTube, Tidal, Amazon |
+| `apple` | −16 LUFS | −1 dBTP | Apple Music |
+| `broadcast` | −23 LUFS | −1 dBTP | EBU R128 радио/TV |
+
+6. **Изход:** `master.wav` (44.1 kHz, 24-bit, stereo), `master.mp3` (320 kbps CBR, ID3v2.3 с заглавие, жанр и текст), `lyrics.txt`, `mastering-report.json` (измерване преди/след и флаг `compliant`). Видео монтажът използва мастерирания запис и реалната му дължина; AAC 256k / 48 kHz.
+
+## CLI за агенти
+
+CLI-то стартира същото API в процеса (не е нужен сървър) и връща JSON. Данните и настройките са общи с Desktop приложението.
+
+```powershell
+cd backend
+.venv\Scripts\python -m app.cli readiness
+.venv\Scripts\python -m app.cli lyrics --prompt "нощно пътуване, надежда" --language bg --duration 120 --out song.txt
+.venv\Scripts\python -m app.cli song --title "Нощни светлини" --prompt "melodic synthwave pop, warm synth pads, male vocal" --lyrics-file song.txt --duration 120 --bpm 104 --key "A minor" --yes --out .\out
+.venv\Scripts\python -m app.cli master input.wav --preset streaming
+.venv\Scripts\python -m app.cli jobs --kind song
+```
+
+Платен (ненулев) quote не се потвърждава без `--yes` и `--max-cost`. Кодове за изход: 0 успех, 1 грешка, 2 мастерингът е извън целта, 3 нужно е потвърждение на цена, 4 timeout.
+
 ## Състояние на разработката
 
 - Включени са хардуерен детектор, provider registry, LLM router, budget guard, ACE-Step song flow, provider setup UI и Novita Wan 2.2 adapter.
