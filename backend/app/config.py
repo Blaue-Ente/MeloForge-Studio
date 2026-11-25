@@ -52,6 +52,9 @@ class Settings(BaseSettings):
     # ACE-Step's 5Hz LM powers thinking/sample mode; GPUs under ~6 GB start without it.
     ace_step_lm_enabled: bool = False
 
+    # Atelier video studio (music videos from a song package). Loopback only.
+    atelier_base_url: str = "http://127.0.0.1:8765"
+
     def origins(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
 

@@ -77,6 +77,29 @@ class ComposeRequest(BaseModel):
     video_job_id: UUID
 
 
+class VoiceSongRequest(BaseModel):
+    """Re-sing a finished song in a saved voice profile (local Seed-VC)."""
+
+    song_job_id: UUID
+    voice_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    semitones: int = Field(default=0, ge=-12, le=12)
+    quality: Literal["fast", "balanced", "best"] = "balanced"
+    vocal_gain_db: float = Field(default=0.0, ge=-6, le=6)
+    master_preset: Literal["streaming", "apple", "broadcast"] = "streaming"
+
+
+class AtelierVideoRequest(BaseModel):
+    """Music video through Atelier. Paid work there always waits for an explicit confirm."""
+
+    song_job_id: UUID
+    mode: Literal["stills", "mixed", "video"] = "mixed"
+    aspect: Literal["16x9", "9x16"] = "16x9"
+    lyrics_on_screen: bool = True
+    local_only: bool = False
+    budget_usd: float = Field(default=1.05, ge=0, le=20)
+    notes: str = Field(default="", max_length=1000)
+
+
 class VisualizerRequest(BaseModel):
     """Free local music video from a finished song (no AI video provider)."""
 
@@ -112,6 +135,7 @@ class RuntimeSettingsUpdate(BaseModel):
     default_mode: Literal["local_first", "hybrid", "cloud_quality"] | None = None
     max_task_budget_usd: float | None = Field(default=None, ge=0.1, le=100)
     allow_cloud_fallback: bool | None = None
+    atelier_base_url: str | None = Field(default=None, max_length=200, pattern=r"^https?://(127\.0\.0\.1|localhost|\[::1\])(:\d{1,5})?/?$")
 
 
 class StudioDraftRequest(BaseModel):

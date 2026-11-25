@@ -16,6 +16,9 @@ SONG_FILES = {
     "raw": (None, None),
     "lyrics": ("lyrics.txt", "text/plain; charset=utf-8"),
     "report": ("mastering-report.json", "application/json"),
+    # Stems exist only for songs re-sung in a cloned voice.
+    "vocals": ("vocals.wav", "audio/wav"),
+    "instrumental": ("instrumental.wav", "audio/wav"),
 }
 
 
@@ -90,3 +93,41 @@ def finalize_song(job_id: str, *, ace_step_base_url: str, ace_step_api_key: str)
         "local_dir": str(folder),
         "mastering": report,
     }
+
+
+def finalize_voice_song(job_id: str, source_job_id: str, voice: dict) -> dict:
+    """Re-sing ``source_job_id`` in ``voice`` and master it as song ``job_id``."""
+    from app.services.voice_clone import sing_in_voice, voice_dir
+
+    source = jobs.get(source_job_id)
+    if not source:
+        raise ValueError("Source song is missing")
+    audio = raw_audio_path(source_job_id) or song_dir(source_job_id) / "master.wav"
+    if not audio.is_file():
+        raise ValueError("Source song has no local audio")
+    job = jobs.get(job_id)
+    payload = job.payload if job else {}
+    folder = song_dir(job_id)
+    folder.mkdir(parents=True, exist_ok=True)
+    stats = sing_in_voice(
+        source_audio=audio, reference=voice_dir(voice["id"]) / "reference.wav", output_dir=folder,
+        semitones=int(payload.get("semitones", 0)), quality=payload.get("quality", "balanced"),
+        vocal_gain_db=float(payload.get("vocal_gain_db", 0.0)),
+    )
+    lyrics = ((source.result or {}).get("lyrics") or source.payload.get("lyrics") or "").strip()
+    if lyrics and lyrics != "[Instrumental]":
+        (folder / "lyrics.txt").write_text(lyrics + "\n", encoding="utf-8", newline="\n")
+    else:
+        lyrics = ""
+    report = master_track(
+        stats.pop("mix"), folder, preset=payload.get("master_preset", "streaming"), title=payload.get("title", ""),
+        artist=voice.get("name") or "MeloForge Studio", genre=payload.get("genre", ""), lyrics=lyrics,
+    )
+    (folder / "song.json").write_text(json.dumps({"job_id": job_id, "payload": payload, "voice": voice}, ensure_ascii=False, indent=2), encoding="utf-8")
+    files = {}
+    for kind in SONG_FILES:
+        found = song_file(job_id, kind)
+        if found and found[0].is_file():
+            files[kind] = f"/api/v1/songs/{job_id}/{kind}"
+    return {"lyrics": lyrics, "files": files, "local_dir": str(folder), "mastering": report,
+            "voice": {"id": voice["id"], "name": voice.get("name")}, "source_song_id": source_job_id, "timings": stats}

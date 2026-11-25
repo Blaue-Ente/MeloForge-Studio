@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from app.config import get_settings
 from app.schemas import (
     AceStepConfigUpdate,
+    AtelierVideoRequest,
     ChatRequest,
     ComposeRequest,
     LyricsDraftRequest,
@@ -23,8 +24,9 @@ from app.schemas import (
     TrendRequest,
     VideoRequest,
     VisualizerRequest,
+    VoiceSongRequest,
 )
-from app.services import jobs
+from app.services import atelier, jobs, voice_clone
 from app.services.ace_step import AceStepConfig
 from app.services.ace_step import list_models as ace_step_models
 from app.services.ace_step import song_status as ace_step_song_status
@@ -51,7 +53,8 @@ from app.services.runtime_settings import (
     update_runtime_preferences,
 )
 from app.services.secret_store import store_secret
-from app.services.songs import finalize_song, song_file
+from app.services.song_package import PackageError, export_package
+from app.services.songs import finalize_song, finalize_voice_song, song_file
 from app.services.trends import (
     GENRES,
     ChartTrack,
@@ -369,7 +372,7 @@ async def download_song(job_id: str, kind: str):
         raise HTTPException(404, "Файлът не е наличен.")
     path, media_type = found
     title = "".join(ch for ch in (job.payload.get("title") or "MeloForge-song") if ch.isalnum() or ch in " -_").strip() or "MeloForge-song"
-    return FileResponse(path, media_type=media_type, filename=f"{title}{path.suffix}" if kind in {"mp3", "wav", "raw"} else path.name)
+    return FileResponse(path, media_type=media_type, filename=f"{title}{path.suffix}" if kind in {"mp3", "wav", "raw"} else f"{title} - {kind}{path.suffix}" if kind in {"vocals", "instrumental"} else path.name)
 
 
 @app.get("/api/v1/jobs/{job_id}")
@@ -392,6 +395,9 @@ async def get_job(job_id: str):
         except Exception:
             # Provider polling is read-only; transient failures leave the job recoverable.
             pass
+    elif job.kind == "song" and job.status == "running" and job.payload.get("mode") == "voice_swap" and job.id not in _voice_running:
+        # The worker thread died with the previous app process.
+        job = jobs.update(job.id, status="failed", error="Обработката беше прекъсната (приложението се рестартира). Пусни я отново.") or job
     elif job.kind == "song" and job.status == "mastering":
         # Resume after a restart; the in-memory guard prevents duplicate work.
         _start_finalize(job.id)
@@ -561,6 +567,167 @@ def _run_visualizer(job_id: str, song_job_id: str) -> None:
     except Exception as exc:
         logger.error("Visualizer %s failed (%s: %s)", job_id, type(exc).__name__, exc)
         jobs.update(job_id, status="failed", error="Локалният клип не беше създаден. Провери FFmpeg и дали песента е мастерирана.")
+
+
+_VOICE_ERRORS = {
+    "consent": (400, "Потвърди, че гласът е твой или имаш изричното съгласие на собственика му."),
+    "empty": (400, "Файлът е празен."),
+    "too_large": (413, "Файлът е над 40 MB. Качи 10–30 секунди запис."),
+    "unreadable": (400, "Записът не може да бъде прочетен. Опитай WAV, MP3, M4A или запис от браузъра."),
+    "too_short": (400, "Записът е под 5 секунди чист глас. Нужни са 10–30 секунди."),
+}
+
+
+@app.get("/api/v1/voices")
+async def list_voice_profiles():
+    return {"engine": voice_clone.engine_status(), "voices": voice_clone.list_voices()}
+
+
+@app.post("/api/v1/voices")
+async def create_voice_profile(request: Request, name: str = Query(default="Моят глас", max_length=60),
+                               filename: str = Query(default="recording.webm", max_length=200), consent: bool = Query(default=False)):
+    """Raw audio body (any FFmpeg-readable format). Consent is mandatory."""
+    length = int(request.headers.get("content-length") or 0)
+    if length > voice_clone.MAX_UPLOAD_BYTES:
+        raise HTTPException(*_VOICE_ERRORS["too_large"])
+    data = await request.body()
+    try:
+        return await asyncio.to_thread(voice_clone.create_voice, name=name, data=data, filename=filename, consent=consent)
+    except voice_clone.VoiceCloneError as exc:
+        code, message = _VOICE_ERRORS.get(str(exc), (400, "Гласовият профил не беше създаден."))
+        raise HTTPException(code, message) from exc
+
+
+@app.get("/api/v1/voices/{voice_id}/sample")
+async def voice_sample(voice_id: str):
+    if not voice_clone.get_voice(voice_id):
+        raise HTTPException(404, "Гласът не е намерен.")
+    return FileResponse(voice_clone.voice_dir(voice_id) / "reference.wav", media_type="audio/wav")
+
+
+@app.post("/api/v1/voices/{voice_id}/delete")
+async def delete_voice_profile(voice_id: str):
+    try:
+        removed = voice_clone.delete_voice(voice_id)
+    except voice_clone.VoiceCloneError:
+        removed = False
+    if not removed:
+        raise HTTPException(404, "Гласът не е намерен.")
+    return {"deleted": voice_id}
+
+
+_voice_running: set[str] = set()
+
+
+def _run_voice_song(job_id: str, source_job_id: str, voice: dict) -> None:
+    _voice_running.add(job_id)
+    try:
+        result = finalize_voice_song(job_id, source_job_id, voice)
+        jobs.update(job_id, status="completed", result=result)
+    except Exception as exc:
+        logger.error("Voice song %s failed (%s: %s)", job_id, type(exc).__name__, str(exc)[-400:])
+        jobs.update(job_id, status="failed", error="Песента не беше изпята с избрания глас. Провери дали Seed-VC е инсталиран и има свободна видео памет (спри други AI задачи).")
+    finally:
+        _voice_running.discard(job_id)
+
+
+@app.post("/api/v1/music/voice-swap")
+async def create_voice_song(request: VoiceSongRequest, background_tasks: BackgroundTasks):
+    status = voice_clone.engine_status()
+    if not status["installed"]:
+        raise HTTPException(503, "Seed-VC не е инсталиран. " + (status["install_hint"] or ""))
+    source = jobs.get(str(request.song_job_id))
+    if not source or source.kind != "song" or source.status != "completed":
+        raise HTTPException(409, "Избери завършена песен.")
+    if source.payload.get("instrumental") or ((source.result or {}).get("lyrics") or "").strip() == "[Instrumental]":
+        raise HTTPException(409, "Инструменталната песен няма вокал за заменяне.")
+    voice = voice_clone.get_voice(request.voice_id)
+    if not voice:
+        raise HTTPException(404, "Гласът не е намерен.")
+    if not shutil.which("ffmpeg"):
+        raise HTTPException(503, "FFmpeg не е инсталиран.")
+    base = source.payload
+    payload = {
+        "mode": "voice_swap", "source_song_id": source.id, "voice_id": voice["id"],
+        "title": f"{base.get('title') or 'Песен'} ({voice.get('name')})"[:120], "prompt": base.get("prompt", ""),
+        "genre": base.get("genre", ""), "duration_seconds": base.get("duration_seconds"), "lyrics": base.get("lyrics", ""),
+        **request.model_dump(exclude={"song_job_id", "voice_id"}),
+    }
+    job = jobs.create("song", payload, 0)
+    # No provider_task_id: the status poller leaves this job to the background worker.
+    jobs.update(job.id, status="running")
+    _voice_running.add(job.id)
+    background_tasks.add_task(_run_voice_song, job.id, source.id, voice)
+    return jobs.get(job.id)
+
+
+_PACKAGE_ERRORS = {"not_ready": "Избери завършена песен.", "no_master": "Песента няма мастериран запис."}
+
+
+@app.post("/api/v1/songs/{job_id}/package")
+async def song_package(job_id: str, stems: bool = Query(default=True)):
+    """Export the ``meloforge.song/1`` package (song.json + master + aligned stems)."""
+    try:
+        return await asyncio.to_thread(export_package, job_id, None, stems=stems)
+    except PackageError as exc:
+        raise HTTPException(409, _PACKAGE_ERRORS.get(str(exc), "Пакетът не беше създаден.")) from exc
+
+
+def _atelier_error(exc: atelier.AtelierError) -> HTTPException:
+    return HTTPException(exc.status if 400 <= exc.status < 600 else 502, str(exc))
+
+
+@app.get("/api/v1/atelier/status")
+async def atelier_status():
+    try:
+        return {"base_url": settings.atelier_base_url, **(await atelier.health(settings.atelier_base_url))}
+    except atelier.AtelierError as exc:
+        return {"base_url": settings.atelier_base_url, "online": False, "error": str(exc)}
+
+
+@app.post("/api/v1/atelier/musicvideo")
+async def atelier_music_video(request: AtelierVideoRequest):
+    """Package the song, hand it to Atelier and return its estimate (nothing paid starts here)."""
+    try:
+        package = await asyncio.to_thread(export_package, str(request.song_job_id), None)
+    except PackageError as exc:
+        raise HTTPException(409, _PACKAGE_ERRORS.get(str(exc), "Пакетът не беше създаден.")) from exc
+    body = {"song_dir": package["song_dir"], **request.model_dump(exclude={"song_job_id"})}
+    try:
+        result = await atelier.create_music_video(settings.atelier_base_url, body)
+    except atelier.AtelierError as exc:
+        raise _atelier_error(exc) from exc
+    return {"package": {"song_dir": package["song_dir"], "stems": "vocals" in package["manifest"]["files"]}, **result}
+
+
+@app.post("/api/v1/atelier/musicvideo/{project}/confirm")
+async def atelier_confirm(project: str):
+    try:
+        return await atelier.confirm(settings.atelier_base_url, project)
+    except atelier.AtelierError as exc:
+        raise _atelier_error(exc) from exc
+
+
+@app.get("/api/v1/atelier/musicvideo/{project}")
+async def atelier_project(project: str):
+    try:
+        return await atelier.status(settings.atelier_base_url, project)
+    except atelier.AtelierError as exc:
+        raise _atelier_error(exc) from exc
+
+
+@app.get("/api/v1/atelier/musicvideo/{project}/video")
+async def atelier_video(project: str):
+    """Serve the finished MP4 that Atelier reports for this project (local file)."""
+    try:
+        state = await atelier.status(settings.atelier_base_url, project)
+    except atelier.AtelierError as exc:
+        raise _atelier_error(exc) from exc
+    video = ((state.get("outputs") or {}).get("video") or "")
+    path = Path(video) if video else None
+    if not path or path.suffix.lower() != ".mp4" or not path.is_file():
+        raise HTTPException(404, "Видеото още не е готово.")
+    return FileResponse(path, media_type="video/mp4", filename=path.name)
 
 
 @app.post("/api/v1/media/visualizer")

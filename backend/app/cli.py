@@ -9,6 +9,11 @@ agent can create a song end to end:
     python -m app.cli trends --genre pop          (or --genre list)
     python -m app.cli master input.wav --out ./mastered --preset streaming
     python -m app.cli jobs --kind song
+    python -m app.cli voices
+    python -m app.cli voice-add me.wav --name "My voice" --i-own-this-voice
+    python -m app.cli sing --song <song job id> --voice <voice id> --semitones 0 --out ./out
+    python -m app.cli export-song <song job id> --to ./package      (meloforge.song/1 for Atelier)
+    python -m app.cli clip <song job id> --mode stills --local-only  (Atelier music video; --confirm to start)
 
 Data and settings are shared with the desktop app (%LOCALAPPDATA%\\MeloForge Studio)
 unless MELOFORGE_DATA_DIR / MELOFORGE_ENV_FILE are already set.
@@ -172,6 +177,87 @@ def cmd_song(args) -> int:
     return _print(output)
 
 
+def cmd_voices(_args) -> int:
+    with _client() as client:
+        return _print(client.get("/api/v1/voices").json())
+
+
+def cmd_voice_add(args) -> int:
+    if not args.i_own_this_voice:
+        return _print({"error": "Pass --i-own-this-voice: only your own voice, or one you have explicit permission to use."}, 1)
+    source = Path(args.input)
+    with _client() as client:
+        response = client.post("/api/v1/voices", params={"name": args.name, "filename": source.name, "consent": "true"},
+                               content=source.read_bytes(), headers={"Content-Type": "application/octet-stream"})
+    return _print(response.json() if response.status_code == 200 else {"error": _detail(response)}, 0 if response.status_code == 200 else 1)
+
+
+def cmd_sing(args) -> int:
+    body = {"song_job_id": args.song, "voice_id": args.voice, "semitones": args.semitones, "quality": args.quality,
+            "master_preset": args.preset}
+    started = time.monotonic()
+    with _client() as client:
+        # The in-process client runs the background conversion before returning.
+        response = client.post("/api/v1/music/voice-swap", json=body)
+        if response.status_code != 200:
+            return _print({"stage": "start", "error": _detail(response)}, 1)
+        state = client.get(f"/api/v1/jobs/{response.json()['id']}").json()
+    if state["status"] != "completed":
+        return _print({"job_id": state["id"], "status": state["status"], "error": state.get("error")}, 1)
+    result = state["result"]
+    output = {"job_id": state["id"], "seconds": round(time.monotonic() - started, 1), "local_dir": result["local_dir"],
+              "timings": result.get("timings"), "mastering": {k: result["mastering"][k] for k in ("preset", "compliant", "after")}}
+    if args.out:
+        target = Path(args.out)
+        target.mkdir(parents=True, exist_ok=True)
+        stem = "".join(ch for ch in state["payload"].get("title", "song") if ch.isalnum() or ch in " -_()").strip() or "song"
+        copied = {}
+        for name, suffix in (("master.mp3", ".mp3"), ("master.wav", ".wav"), ("vocals.wav", " - vocals.wav"), ("instrumental.wav", " - instrumental.wav")):
+            source = Path(result["local_dir"]) / name
+            if source.is_file():
+                shutil.copyfile(source, target / f"{stem}{suffix}")
+                copied[name] = str((target / f"{stem}{suffix}").resolve())
+        output["files"] = copied
+    return _print(output)
+
+
+def cmd_export_song(args) -> int:
+    from app.services.song_package import PackageError, export_package
+
+    try:
+        result = export_package(args.song, Path(args.to) if args.to else None, stems=not args.no_stems)
+    except PackageError as exc:
+        return _print({"error": str(exc)}, 1)
+    return _print(result)
+
+
+def cmd_clip(args) -> int:
+    body = {"song_job_id": args.song, "mode": args.mode, "aspect": args.aspect, "lyrics_on_screen": not args.no_lyrics,
+            "local_only": args.local_only, "budget_usd": args.budget, "notes": args.notes}
+    with _client() as client:
+        created = client.post("/api/v1/atelier/musicvideo", json=body)
+        if created.status_code != 200:
+            return _print({"stage": "estimate", "error": _detail(created)}, 1)
+        state = created.json()
+        project = state.get("project")
+        amount = float((state.get("estimate") or {}).get("amount_usd") or 0)
+        if not args.confirm:
+            return _print({**state, "message": "Estimate only. Re-run with --confirm to start."}, 3 if amount > 0 else 0)
+        if amount > args.budget:
+            return _print({**state, "error": f"Estimate ${amount:.2f} exceeds --budget ${args.budget:.2f}"}, 3)
+        confirmed = client.post(f"/api/v1/atelier/musicvideo/{project}/confirm")
+        if confirmed.status_code != 200:
+            return _print({"stage": "confirm", "project": project, "error": _detail(confirmed)}, 1)
+        started = time.monotonic()
+        while True:
+            state = client.get(f"/api/v1/atelier/musicvideo/{project}").json()
+            if state.get("status") in {"done", "failed", "interrupted"} or time.monotonic() - started > args.timeout:
+                break
+            print(f"[{int(time.monotonic() - started)}s] {state.get('stage')} {state.get('pct')}%", file=sys.stderr)
+            time.sleep(5)
+    return _print(state, 0 if state.get("status") == "done" else 1)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="meloforge", description="MeloForge song generation CLI (JSON output)")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -232,6 +318,38 @@ def build_parser() -> argparse.ArgumentParser:
     master_cmd.add_argument("--title", default="")
     master_cmd.add_argument("--genre", default="")
     master_cmd.set_defaults(func=cmd_master)
+
+    sub.add_parser("voices", help="List voice profiles and the Seed-VC engine status").set_defaults(func=cmd_voices)
+    voice_add = sub.add_parser("voice-add", help="Create a voice profile from a 10-30 s clean recording")
+    voice_add.add_argument("input")
+    voice_add.add_argument("--name", default="My voice")
+    voice_add.add_argument("--i-own-this-voice", action="store_true", help="Required consent confirmation")
+    voice_add.set_defaults(func=cmd_voice_add)
+    sing_cmd = sub.add_parser("sing", help="Re-sing a finished song in a voice profile (local Seed-VC)")
+    sing_cmd.add_argument("--song", required=True)
+    sing_cmd.add_argument("--voice", required=True)
+    sing_cmd.add_argument("--semitones", type=int, default=0)
+    sing_cmd.add_argument("--quality", choices=["fast", "balanced", "best"], default="balanced")
+    sing_cmd.add_argument("--preset", choices=["streaming", "apple", "broadcast"], default="streaming")
+    sing_cmd.add_argument("--out")
+    sing_cmd.set_defaults(func=cmd_sing)
+
+    export_cmd = sub.add_parser("export-song", help="Export a meloforge.song/1 package (song.json, master, aligned stems)")
+    export_cmd.add_argument("song")
+    export_cmd.add_argument("--to", help="Target folder (default: data/songs/<id>/package)")
+    export_cmd.add_argument("--no-stems", action="store_true")
+    export_cmd.set_defaults(func=cmd_export_song)
+    clip_cmd = sub.add_parser("clip", help="Music video through Atelier (estimate first, --confirm to start)")
+    clip_cmd.add_argument("song")
+    clip_cmd.add_argument("--mode", choices=["stills", "mixed", "video"], default="mixed")
+    clip_cmd.add_argument("--aspect", choices=["16x9", "9x16"], default="16x9")
+    clip_cmd.add_argument("--no-lyrics", action="store_true")
+    clip_cmd.add_argument("--local-only", action="store_true")
+    clip_cmd.add_argument("--budget", type=float, default=1.05)
+    clip_cmd.add_argument("--notes", default="")
+    clip_cmd.add_argument("--confirm", action="store_true")
+    clip_cmd.add_argument("--timeout", type=int, default=7200)
+    clip_cmd.set_defaults(func=cmd_clip)
     return parser
 
 

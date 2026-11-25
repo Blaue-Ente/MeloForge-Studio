@@ -1,4 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
+import { VoiceStudio } from "./VoiceStudio";
+import { AtelierClip } from "./AtelierClip";
 import { Activity, AlertCircle, AudioLines, CheckCircle2, Cloud, Cpu, Gauge, HardDrive, Layers3, Play, RefreshCw, ShieldCheck, SlidersHorizontal, Sparkles, Video, WandSparkles } from "lucide-react";
 
 type View = "control" | "music" | "video";
@@ -6,7 +8,7 @@ type Mode = "local_first" | "hybrid" | "cloud_quality";
 type Provider = { id: string; name: string; description: string; configured: boolean; model: string | null; pricing_configured: boolean; input_usd_per_1m?: number; output_usd_per_1m?: number; video_cost_per_second_usd?: number | null; kind: "local" | "cloud" };
 type Resources = { ram_total_gb: number; ram_available_gb: number; gpu: { detected: boolean; vram_total_gb: number | null; vram_available_gb: number | null } };
 type Check = { id: string; label: string; ok: boolean; detail: string };
-type SongJob = { id: string; kind: string; status: string; quote_usd: number; payload: { title: string; prompt: string; genre: string; mood: string; language: string; duration_seconds: number; lyrics: string; master_preset?: string; instrumental?: boolean }; provider_task_id?: string | null; result?: { audio_url?: string; lyrics?: string; metadata?: Record<string, unknown>; files?: Record<string, string>; mastering?: unknown } | null; warnings?: string[]; error?: string | null; estimate_note?: string; max_cost_usd?: number };
+type SongJob = { id: string; kind: string; status: string; quote_usd: number; payload: { title: string; prompt: string; genre: string; mood: string; language: string; duration_seconds: number; lyrics: string; master_preset?: string; instrumental?: boolean; mode?: string }; provider_task_id?: string | null; result?: { audio_url?: string; lyrics?: string; metadata?: Record<string, unknown>; files?: Record<string, string>; mastering?: unknown } | null; warnings?: string[]; error?: string | null; estimate_note?: string; max_cost_usd?: number };
 type VideoJob = { id: string; kind: string; status: string; quote_usd: number; payload: { prompt: string; duration: number; size: string }; provider_task_id?: string | null; result?: { video_urls?: string[] } | null; error?: string | null; estimate_note?: string; max_cost_usd?: number };
 type MediaJob = { id: string; kind: string; status: string; payload: { song_job_id: string; video_job_id: string }; result?: { formats?: string[]; duration_seconds?: number; lyrics_available?: boolean } | null; error?: string | null };
 
@@ -203,13 +205,15 @@ function MusicStudio({ apiOnline }: { apiOnline: boolean }) {
     {job && <div className="job-card"><div className="job-head"><span className={`job-state ${job.status}`}>{stateLabels[job.status] || job.status}</span><strong>${job.quote_usd.toFixed(4)}</strong></div><p>{job.estimate_note || `ACE-Step · ${job.payload.duration_seconds}s · ${job.payload.language === "bg" ? "български" : "English"}`}</p>
       {warnings.map((warning) => <p key={warning} className="inline-notice warn-text">⚠ {warning}</p>)}
       {job.status === "awaiting_confirmation" && <button className="primary-button large" disabled={busy} onClick={() => void confirmSong()}><ShieldCheck size={17} />Потвърди и създай песента</button>}
-      {job.status === "running" && <p className="inline-notice">ACE-Step генерира… проверявам статуса автоматично.</p>}
+      {job.status === "running" && <p className="inline-notice">{job.payload.mode === "voice_swap" ? "Отделям вокала и го преобразувам в избрания глас (локално, ~1–3 мин. на минута песен)…" : "ACE-Step генерира… проверявам статуса автоматично."}</p>}
       {job.status === "mastering" && <p className="inline-notice">Песента е готова — мастериране по {presetLabels[job.payload.master_preset || "streaming"] || "streaming стандарт"}…</p>}
       {job.status === "failed" && <p className="inline-notice error-text">{job.error || "Генерацията не беше успешна."}</p>}
       {job.status === "completed" && (files.mp3 || job.result?.audio_url) && <><audio className="generated-audio" src={files.mp3 || job.result?.audio_url} controls />
         {mastering && <div className="master-meter"><span><b>{mastering.after.integrated_lufs.toFixed(1)}</b> LUFS</span><span><b>{mastering.after.true_peak_dbtp.toFixed(1)}</b> dBTP</span><span><b>{mastering.after.loudness_range_lu.toFixed(1)}</b> LU LRA</span><span><b>{mastering.after.duration_seconds.toFixed(0)}</b> сек.</span><em className={mastering.compliant ? "good" : "warn"}>{mastering.compliant ? `Отговаря на ${presetLabels[mastering.preset] || mastering.preset}` : "Извън целевия диапазон"}</em></div>}
-        <div className="download-row">{files.mp3 && <a href={files.mp3} download>MP3 320k</a>}{files.wav && <a href={files.wav} download>WAV 24-bit</a>}{files.lyrics && <a href={files.lyrics} download>Текст TXT</a>}{files.raw && <a href={files.raw} download>Оригинал</a>}</div>
-        <details className="lyrics-result"><summary>Покажи текста на песента</summary><pre>{job.result?.lyrics || job.payload.lyrics || "ACE-Step не върна текст в резултата."}</pre></details></>}
+        <div className="download-row">{files.mp3 && <a href={files.mp3} download>MP3 320k</a>}{files.wav && <a href={files.wav} download>WAV 24-bit</a>}{files.lyrics && <a href={files.lyrics} download>Текст TXT</a>}{files.raw && <a href={files.raw} download>Оригинал</a>}{files.vocals && <a href={files.vocals} download>Само вокал</a>}{files.instrumental && <a href={files.instrumental} download>Само музика</a>}</div>
+        <details className="lyrics-result"><summary>Покажи текста на песента</summary><pre>{job.result?.lyrics || job.payload.lyrics || "ACE-Step не върна текст в резултата."}</pre></details>
+        <AtelierClip song={job} />
+        <VoiceStudio song={job} onCreated={(next: SongJob) => { setJob(next); setWarnings([]); void loadHistory(); }} /></>}
     </div>}</div></section>;
 }
 function VideoStudio({ apiOnline, checks }: { apiOnline: boolean; checks: Check[] }) {

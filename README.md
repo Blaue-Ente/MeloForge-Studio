@@ -126,6 +126,38 @@ Music Video → „Безплатен клип“ (`POST /api/v1/media/visualize
 
 Платеният път (Novita Wan 2.2) остава: една AI сцена от 5–8 сек., повторена до дължината на песента.
 
+## Моят глас (клониране за пеене)
+
+Готова песен може да бъде „изпята“ с твоя глас. Обработката е изцяло локална и безплатна:
+
+1. **Demucs htdemucs** отделя вокала от музиката.
+2. **Seed-VC** (модел за пеене, 44,1 kHz, с F0) преобразува вокала в тембъра от 10–30 сек. твой запис (zero-shot, без обучение). Мелодията, ритъмът и текстът идват от оригиналния вокал, затова работи на всеки език, включително български.
+3. Новият вокал се изравнява по сила с оригинала, смесва се обратно с музиката и се мастерира по избрания стандарт. Изнасят се и отделните „Само вокал“ / „Само музика“.
+
+Гласовият профил се записва от микрофона или се качва като файл и се пази само в `data/voices`. Създава се единствено след потвърждение, че гласът е твой или имаш изричното съгласие на човека.
+
+Инсталиране (отделна среда, за да остане приложението леко; ~5 GB с torch и моделите):
+
+```
+git clone https://github.com/Plachtaa/seed-vc %LOCALAPPDATA%\Programs\Seed-VC
+cd %LOCALAPPDATA%\Programs\Seed-VC
+uv venv --python 3.10 .venv
+uv pip install --python .venv\Scripts\python.exe torch==2.4.0 torchaudio==2.4.0 --index-url https://download.pytorch.org/whl/cu121
+uv pip install --python .venv\Scripts\python.exe scipy==1.13.1 librosa==0.10.2 huggingface-hub munch einops transformers==4.46.3 soundfile pydub hydra-core pyyaml numpy==1.26.4 matplotlib tqdm demucs==4.0.1 descript-audio-codec==1.0.0
+```
+
+Ако `import torch` даде грешка за `fbgemm.dll`, липсва `libomp140.x86_64.dll` (OpenMP runtime на Microsoft). Сложи го в `.venv\Lib\site-packages	orch\lib` или инсталирай torch 2.4.1+.
+
+Скорост на RTX 2050 (4 GB): отделянето на 100 сек. песен отнема ~1 мин. Първото преобразуване тегли и моделите (~2 GB), затова е по-бавно. ACE-Step и ComfyUI трябва да не работят едновременно с него.
+
+CLI: `python -m app.cli voices`, `voice-add me.wav --name "Моят глас" --i-own-this-voice`, `sing --song <id> --voice <id> --semitones 0 --out ./out`.
+
+## Клип в Atelier
+
+Бутонът „Клип в Atelier“ (и `python -m app.cli clip <song id> --mode stills --local-only [--confirm]`) изнася пакет `meloforge.song/1`: `song.json`, `master.wav/mp3`, `lyrics.txt` и `vocals.wav`/`instrumental.wav`, подравнени проба по проба с мастера. Пакетът отива в Atelier (`atelier_base_url`, по подразбиране `http://127.0.0.1:8765`, само локален адрес). Atelier връща оценка на цената и нищо платено не започва без „Потвърди“. MeloForge следи напредъка и показва готовия MP4. Самостоятелен пакет: `python -m app.cli export-song <id> --to ./package`.
+
+Друг път се задава с `MELOFORGE_SEEDVC_DIR`. Моделите (~1 GB) се изтеглят при първото пускане. На 4 GB видеокарта процесът върви последователно с ACE-Step. VibeVoice не се използва: прави само говор, официалното клониране е премахнато от Microsoft и лицензът е само за изследвания.
+
 ## Жанрове и актуални тенденции
 
 Music Studio има 17 жанрови профила (поп, денс, хип-хоп, R&B, рок, инди, електронна, synthwave, фолк, балкан поп, латино, кънтри, метъл, соул/фънк, джаз, реге, филмова). „Анализирай хитовете“ (`POST /api/v1/music/trends`):

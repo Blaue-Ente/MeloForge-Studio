@@ -7,7 +7,7 @@ from typing import Any
 
 from app.config import Settings
 
-_ALLOWED_FIELDS = {"default_mode", "max_task_budget_usd", "allow_cloud_fallback"}
+_ALLOWED_FIELDS = {"default_mode", "max_task_budget_usd", "allow_cloud_fallback", "atelier_base_url"}
 _PROVIDER_FIELDS = {
     "openrouter": {"openrouter_model", "openrouter_input_usd_per_1m", "openrouter_output_usd_per_1m"},
     "novita": {"novita_model", "novita_input_usd_per_1m", "novita_output_usd_per_1m", "novita_video_cost_per_second_usd"},
@@ -61,6 +61,7 @@ def public_runtime_preferences(settings: Settings) -> dict[str, Any]:
         "default_mode": settings.default_mode,
         "max_task_budget_usd": settings.max_task_budget_usd,
         "allow_cloud_fallback": settings.allow_cloud_fallback,
+        "atelier_base_url": settings.atelier_base_url,
     }
 
 
