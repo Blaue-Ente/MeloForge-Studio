@@ -38,3 +38,5 @@
 .trend-summary{margin:10px 0 0;font-size:11px;line-height:1.55;color:#c7d7e6}.trend-caption{margin:8px 0 0;font-size:10px;line-height:1.5;color:#a9c0d5}
 .theme-tags{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}.theme-tags span{font-size:9px;padding:4px 8px;border-radius:30px;background:#1a2f45;color:#a9e1f5}
 .chart-list{margin:8px 0 0;padding-left:20px;font-size:10px;line-height:1.7;color:#c4d3e1}.chart-list em{font-style:normal;color:#6f8399;margin-left:6px}
+.viz-card{margin:0 0 20px}.viz-card label{display:block;margin:12px 0 0;color:#c8d5e4;font-size:10px;font-weight:700}.viz-card select{display:block;width:100%;margin-top:6px;padding:9px 10px;border:1px solid #2b4054;border-radius:8px;background:#09131e;color:#edf4fb}.viz-card .checkline{display:flex;margin:12px 0 0}.viz-card .checkline input{width:auto;margin:0}
+.section-divider{display:flex;align-items:center;justify-content:space-between;margin:6px 0 14px;padding-top:14px;border-top:1px solid #203041}.section-divider b{font-size:11px;color:#dbe9f5}.section-divider span{font-size:9px;color:#7f94a9}

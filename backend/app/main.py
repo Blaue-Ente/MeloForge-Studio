@@ -22,6 +22,7 @@ from app.schemas import (
     StudioDraftRequest,
     TrendRequest,
     VideoRequest,
+    VisualizerRequest,
 )
 from app.services import jobs
 from app.services.ace_step import AceStepConfig
@@ -64,6 +65,7 @@ from app.services.trends import (
     public_genres,
     save_cache,
 )
+from app.services.visualizer import render_visualizer
 
 settings = get_settings()
 logger = logging.getLogger("meloforge")
@@ -528,6 +530,54 @@ def _run_composition(job_id: str, song_job_id: str, video_job_id: str) -> None:
     except Exception as exc:
         logger.error("Media composition %s failed (%s)", job_id, type(exc).__name__)
         jobs.update(job_id, status="failed", error="Неуспешно сглобяване. Провери дали FFmpeg е наличен и файловете са достъпни.")
+
+
+def _run_visualizer(job_id: str, song_job_id: str) -> None:
+    try:
+        song = jobs.get(song_job_id)
+        mastered = song_file(song_job_id, "mp3") if song else None
+        if not song or not mastered or not mastered[0].is_file():
+            raise ValueError("The song has no mastered audio.")
+        ffmpeg = shutil.which("ffmpeg")
+        if not ffmpeg:
+            raise ValueError("FFmpeg is not installed.")
+        job = jobs.get(job_id)
+        options = job.payload if job else {}
+        lyrics = (song.result or {}).get("lyrics") or song.payload.get("lyrics") or ""
+        if lyrics.strip() == "[Instrumental]":
+            lyrics = ""
+        title = options.get("title") if options.get("title") is not None else song.payload.get("title", "")
+        subtitle = options.get("subtitle") if options.get("subtitle") is not None else " · ".join(
+            part for part in [song.payload.get("genre", ""), "MeloForge"] if part)
+        result = render_visualizer(
+            audio=mastered[0], output_dir=output_path(job_id, "16x9").parent, ffmpeg=ffmpeg, title=title or "",
+            subtitle=subtitle or "", lyrics=lyrics, style=options.get("style", "spectrum"),
+            palette=options.get("palette", "neon"), show_lyrics=bool(options.get("show_lyrics")),
+        )
+        if lyrics.strip():
+            lyrics_path(job_id).write_text(lyrics.strip() + "\n", encoding="utf-8", newline="\n")
+        result.update(song_job_id=song_job_id, lyrics_available=bool(lyrics.strip()))
+        jobs.update(job_id, status="completed", result=result)
+    except Exception as exc:
+        logger.error("Visualizer %s failed (%s: %s)", job_id, type(exc).__name__, exc)
+        jobs.update(job_id, status="failed", error="Локалният клип не беше създаден. Провери FFmpeg и дали песента е мастерирана.")
+
+
+@app.post("/api/v1/media/visualizer")
+async def create_visualizer(request: VisualizerRequest, background_tasks: BackgroundTasks):
+    song = jobs.get(str(request.song_job_id))
+    if not song or song.kind != "song" or song.status != "completed":
+        raise HTTPException(409, "Избери завършена песен.")
+    mastered = song_file(song.id, "mp3")
+    if not mastered or not mastered[0].is_file():
+        raise HTTPException(409, "Песента няма мастериран запис. Генерирай я отново с тази версия на MeloForge.")
+    if not shutil.which("ffmpeg"):
+        raise HTTPException(503, "FFmpeg не е инсталиран.")
+    payload = {"mode": "visualizer", "song_job_id": song.id, **request.model_dump(exclude={"song_job_id"})}
+    composition = jobs.create("composition", payload, 0)
+    jobs.update(composition.id, status="queued")
+    background_tasks.add_task(_run_visualizer, composition.id, song.id)
+    return jobs.get(composition.id)
 
 
 @app.post("/api/v1/media/compose")

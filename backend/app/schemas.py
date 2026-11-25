@@ -77,6 +77,17 @@ class ComposeRequest(BaseModel):
     video_job_id: UUID
 
 
+class VisualizerRequest(BaseModel):
+    """Free local music video from a finished song (no AI video provider)."""
+
+    song_job_id: UUID
+    style: Literal["spectrum", "wave", "pulse"] = "spectrum"
+    palette: Literal["neon", "sunset", "ocean", "mono"] = "neon"
+    show_lyrics: bool = False
+    title: str | None = Field(default=None, max_length=120)
+    subtitle: str | None = Field(default=None, max_length=120)
+
+
 class ProviderConfigUpdate(BaseModel):
     provider: Literal["openrouter", "novita", "nvidia", "huggingface"]
     api_key: str = Field(min_length=8, max_length=500)

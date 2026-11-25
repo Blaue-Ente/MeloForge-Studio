@@ -14,6 +14,8 @@
 - [x] ACE-Step song-generation adapter (structure tags, BPM/key/seed, lossless output)
 - [x] Loudness mastering (−14/−16/−23 LUFS, −1 dBTP), WAV/MP3 deliverables, mastering report
 - [x] Genre presets and chart trend analysis (Deezer + LLM brief)
+- [x] Free local visualizer music video (spectrum/wave/pulse, lyrics overlay)
+- [ ] Music-video mode in Atelier (song-driven storyboard, ComfyUI stills, beat-synced cuts)
 - [x] Agent CLI (`python -m app.cli`) and song history API
 - [ ] VoxCPM voice-over adapter (not a singing engine)
 - [ ] InvokeAI keyframes and scene references
