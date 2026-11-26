@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { JobProgress, type Progress } from "./JobProgress";
-import { ArrowLeft, ArrowRight, Check, Clapperboard, Download, FolderOpen, Mic, Music2, RefreshCw, Sparkles, Wand2 } from "lucide-react";
+import { ArrowLeft, ArrowRight, Check, Clapperboard, Download, FolderOpen, Mic, Music2, Pencil, RefreshCw, Sparkles, Trash2, Wand2 } from "lucide-react";
 
 type Genre = { id: string; label: string; caption: string; bpm: [number, number]; mood: string };
 type Voice = { id: string; name: string };
@@ -125,6 +125,15 @@ export function FastMode({ apiOnline, onOpenStudio }: { apiOnline: boolean; onOp
     finally { setBusy(""); }
   }
 
+  async function deleteCurrent() {
+    const target = finalJob;
+    if (!target || !window.confirm("Да изтрия ли тази песен и папката ѝ в Музика\\MeloForge? Това не може да се върне.")) return;
+    const response = await fetch(`/api/v1/jobs/${target.id}/delete?library_copy=true`, { method: "POST" });
+    if (!response.ok) { setError("Песента не беше изтрита."); return; }
+    if (voiceJob && song && target.id === voiceJob.id) setVoiceJob(null); else { setSong(null); setVoiceJob(null); }
+    setClip(null); setStep(2); setNote("Песента е изтрита. Текстът е запазен — можеш да създадеш нова.");
+  }
+
   function openFolder() {
     if (finalJob) void fetch(`/api/v1/library/open?job_id=${finalJob.id}`, { method: "POST" });
   }
@@ -184,7 +193,13 @@ export function FastMode({ apiOnline, onOpenStudio }: { apiOnline: boolean; onOp
         {songDone && finalJob?.result?.files?.mp3 && <>
           <audio className="generated-audio" controls src={finalJob.result.files.mp3} />
           <div className="fast-actions"><button className="secondary-button" onClick={openFolder}><FolderOpen size={15} />Отвори папката</button><a className="secondary-button" href={finalJob.result.files.mp3} download><Download size={15} />Изтегли MP3</a></div>
-          <p className="fast-hint">Песента е записана и в Музика\MeloForge. Ако не ти харесва, върни се на „Текст“ или „Глас“ и опитай пак.</p>
+          <p className="fast-hint">Песента е записана и в Музика\MeloForge.</p>
+          <h2 className="fast-sub">Искаш промяна?</h2>
+          <div className="choice-grid">
+            <button className="choice" onClick={() => { setStep(1); setNote("Промени думите отдолу и натисни „Напред“ → „Създай песента“. Ще се създаде нова версия; тази остава."); }}><Pencil size={20} /><b>Промени думите</b><small>ръчна редакция на текста и нова версия</small></button>
+            <button className="choice" onClick={() => setStep(2)}><Music2 size={20} /><b>Друг глас или дължина</b><small>същия текст, нова версия</small></button>
+            <button className="choice" onClick={() => void deleteCurrent()}><Trash2 size={20} /><b>Изтрий тази песен</b><small>и папката ѝ в Музика\MeloForge</small></button>
+          </div>
         </>}
       </>}
 

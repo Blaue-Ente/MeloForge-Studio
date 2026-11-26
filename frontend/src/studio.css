@@ -88,3 +88,4 @@
 .danger-row{display:flex;justify-content:flex-end;margin-top:12px}
 .secondary-button.danger{color:#ff9b9b;border-color:#5a2a2a}.secondary-button.danger:hover{background:#2a1212}
 .lyrics-edit textarea{width:100%;min-height:260px}
+.song-actions{display:flex;flex-wrap:wrap;gap:10px;margin:14px 0}.song-actions button{display:inline-flex;align-items:center;gap:6px}

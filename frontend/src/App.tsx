@@ -3,7 +3,7 @@ import { VoiceStudio } from "./VoiceStudio";
 import { FastMode } from "./FastMode";
 import { JobProgress, type Progress } from "./JobProgress";
 import { AtelierClip } from "./AtelierClip";
-import { Trash2, Zap } from "lucide-react";
+import { Pencil, Trash2, Zap } from "lucide-react";
 import { Activity, AlertCircle, AudioLines, CheckCircle2, Cloud, Cpu, Gauge, HardDrive, Layers3, Play, RefreshCw, ShieldCheck, SlidersHorizontal, Sparkles, Video, WandSparkles } from "lucide-react";
 
 type View = "fast" | "control" | "music" | "video";
@@ -251,10 +251,13 @@ function MusicStudio({ apiOnline }: { apiOnline: boolean }) {
         {mastering && <div className="master-meter"><span><b>{mastering.after.integrated_lufs.toFixed(1)}</b> LUFS</span><span><b>{mastering.after.true_peak_dbtp.toFixed(1)}</b> dBTP</span><span><b>{mastering.after.loudness_range_lu.toFixed(1)}</b> LU LRA</span><span><b>{mastering.after.duration_seconds.toFixed(0)}</b> сек.</span><em className={mastering.compliant ? "good" : "warn"}>{mastering.compliant ? `Отговаря на ${presetLabels[mastering.preset] || mastering.preset}` : "Извън целевия диапазон"}</em></div>}
         <div className="download-row">{files.mp3 && <a href={files.mp3} download>MP3 320k</a>}{files.wav && <a href={files.wav} download>WAV 24-bit</a>}{files.lyrics && <a href={files.lyrics} download>Текст TXT</a>}{files.raw && <a href={files.raw} download>Оригинал</a>}{files.vocals && <a href={files.vocals} download>Само вокал</a>}{files.instrumental && <a href={files.instrumental} download>Само музика</a>}</div>
         <div className="library-row"><button className="secondary-button compact" onClick={() => void fetch(`/api/v1/library/open?job_id=${job.id}`, { method: "POST" })}>Отвори папката с песента</button><small>{(job.result as { library_dir?: string } | null | undefined)?.library_dir || "Музика\MeloForge"}</small></div>
-        {!editingLyrics ? <details className="lyrics-result"><summary>Покажи текста на песента</summary><pre>{job.result?.lyrics || job.payload.lyrics || "ACE-Step не върна текст в резултата."}</pre>
-          <div className="fast-actions"><button className="secondary-button compact" onClick={() => { setEditedLyrics(job.result?.lyrics || job.payload.lyrics || ""); setEditingLyrics(true); }}>Редактирай текста</button><button className="secondary-button compact" onClick={() => { setLyrics(job.result?.lyrics || job.payload.lyrics || ""); setTitle(job.payload.title || ""); setNoticeTop("Текстът е зареден във формата отгоре — промени го и натисни „Изчисли цена“ за нова версия."); window.scrollTo({ top: 0, behavior: "smooth" }); }}>Нова версия с този текст</button></div></details>
+        <div className="song-actions">
+          <button className="secondary-button" onClick={() => { setEditedLyrics(job.result?.lyrics || job.payload.lyrics || ""); setEditingLyrics(true); }}><Pencil size={15} />Промени думите</button>
+          <button className="secondary-button" onClick={() => { setLyrics(job.result?.lyrics || job.payload.lyrics || ""); setTitle(job.payload.title || ""); setPrompt(job.payload.prompt || prompt); if (job.payload.genre) setGenre(job.payload.genre); if (job.payload.mood) setMood(job.payload.mood); if (job.payload.duration_seconds) setDuration(job.payload.duration_seconds); setNoticeTop(`„${job.payload.title || "Песента"}“ е заредена във формата — промени текста, стила или дължината и натисни „Изчисли цена“. Ще се създаде нова версия, старата остава.`); document.querySelector(".lyrics-input")?.scrollIntoView({ behavior: "smooth", block: "center" }); }}><RefreshCw size={15} />Промени песента (нова версия)</button>
+          <button className="secondary-button danger" onClick={() => void deleteSong(job)}><Trash2 size={15} />Изтрий</button>
+        </div>
+        {!editingLyrics ? <details className="lyrics-result"><summary>Покажи текста на песента</summary><pre>{job.result?.lyrics || job.payload.lyrics || "ACE-Step не върна текст в резултата."}</pre></details>
           : <div className="lyrics-edit"><textarea className="lyrics-input" value={editedLyrics} onChange={(event) => setEditedLyrics(event.target.value)} /><p className="inline-notice">Поправките влизат в TXT файла, субтитрите на клиповете и папката за публикуване. Звукът не се променя — за изпят нов текст ползвай „Нова версия с този текст“.</p><div className="fast-actions"><button className="primary-button" onClick={() => void saveEditedLyrics()}>Запази текста</button><button className="secondary-button" onClick={() => setEditingLyrics(false)}>Откажи</button></div></div>}
-        <div className="danger-row"><button className="secondary-button compact danger" onClick={() => void deleteSong(job)}><Trash2 size={14} />Изтрий песента</button></div>
         <AtelierClip song={job} />
         <VoiceStudio song={job} onCreated={(next: SongJob) => { setJob(next); setWarnings([]); void loadHistory(); }} /></>}
     </div>}</div></section>;
