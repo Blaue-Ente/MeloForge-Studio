@@ -26,7 +26,7 @@ from app.schemas import (
     VisualizerRequest,
     VoiceSongRequest,
 )
-from app.services import atelier, jobs, voice_clone
+from app.services import atelier, jobs, library, voice_clone
 from app.services.ace_step import AceStepConfig
 from app.services.ace_step import list_models as ace_step_models
 from app.services.ace_step import song_status as ace_step_song_status
@@ -486,10 +486,22 @@ def build_ace_step_payload(request_data: dict, model: str, *, lm_enabled: bool) 
 _finalizing: set[str] = set()
 
 
+def _publish_to_library(job_id: str) -> None:
+    """Copy a finished song to the readable library folder; never fails the job."""
+    try:
+        folder = library.publish_song(job_id)
+        job = jobs.get(job_id)
+        if folder and job:
+            jobs.update(job_id, result={**(job.result or {}), "library_dir": str(folder)})
+    except OSError as exc:
+        logger.warning("Library copy of %s failed: %s", job_id, exc)
+
+
 async def _finalize_song_job(job_id: str) -> None:
     try:
         result = await asyncio.to_thread(finalize_song, job_id, ace_step_base_url=settings.ace_step_base_url, ace_step_api_key=settings.ace_step_api_key)
         jobs.update(job_id, status="completed", result=result)
+        await asyncio.to_thread(_publish_to_library, job_id)
     except Exception as exc:
         logger.error("Song finalisation %s failed (%s: %s)", job_id, type(exc).__name__, exc)
         jobs.update(job_id, status="failed", error="Песента е генерирана, но не беше изтеглена или мастерирана. Провери FFmpeg и ACE-Step.")
@@ -564,6 +576,11 @@ def _run_visualizer(job_id: str, song_job_id: str) -> None:
             lyrics_path(job_id).write_text(lyrics.strip() + "\n", encoding="utf-8", newline="\n")
         result.update(song_job_id=song_job_id, lyrics_available=bool(lyrics.strip()))
         jobs.update(job_id, status="completed", result=result)
+        for aspect in result.get("formats", []):
+            try:
+                library.add_clip(song_job_id, output_path(job_id, aspect), f"визуализация {aspect}")
+            except OSError as exc:
+                logger.warning("Library copy of clip %s failed: %s", job_id, exc)
     except Exception as exc:
         logger.error("Visualizer %s failed (%s: %s)", job_id, type(exc).__name__, exc)
         jobs.update(job_id, status="failed", error="Локалният клип не беше създаден. Провери FFmpeg и дали песента е мастерирана.")
@@ -624,6 +641,7 @@ def _run_voice_song(job_id: str, source_job_id: str, voice: dict) -> None:
     try:
         result = finalize_voice_song(job_id, source_job_id, voice)
         jobs.update(job_id, status="completed", result=result)
+        _publish_to_library(job_id)
     except Exception as exc:
         logger.error("Voice song %s failed (%s: %s)", job_id, type(exc).__name__, str(exc)[-400:])
         jobs.update(job_id, status="failed", error="Песента не беше изпята с избрания глас. Провери дали Seed-VC е инсталиран и има свободна видео памет (спри други AI задачи).")
@@ -697,6 +715,8 @@ async def atelier_music_video(request: AtelierVideoRequest):
         result = await atelier.create_music_video(settings.atelier_base_url, body)
     except atelier.AtelierError as exc:
         raise _atelier_error(exc) from exc
+    if result.get("project"):
+        _remember_atelier_project(result["project"], str(request.song_job_id), request.mode, request.aspect)
     return {"package": {"song_dir": package["song_dir"], "stems": "vocals" in package["manifest"]["files"]}, **result}
 
 
@@ -708,12 +728,74 @@ async def atelier_confirm(project: str):
         raise _atelier_error(exc) from exc
 
 
+def _atelier_projects_file() -> Path:
+    return jobs.ROOT / "atelier-projects.json"
+
+
+def _atelier_projects() -> dict:
+    try:
+        import json
+
+        return json.loads(_atelier_projects_file().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def _remember_atelier_project(project: str, song_job_id: str, mode: str, aspect: str) -> None:
+    import json
+
+    projects = _atelier_projects()
+    projects[project] = {"song_job_id": song_job_id, "mode": mode, "aspect": aspect, "in_library": False}
+    _atelier_projects_file().parent.mkdir(parents=True, exist_ok=True)
+    _atelier_projects_file().write_text(json.dumps(projects, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _collect_atelier_clip(project: str, state: dict) -> None:
+    """Once a known project is done, copy its MP4 next to the song in the library."""
+    import json
+
+    projects = _atelier_projects()
+    entry = projects.get(project)
+    video = Path((state.get("outputs") or {}).get("video") or "")
+    if not entry or entry.get("in_library") or state.get("status") != "done" or video.suffix.lower() != ".mp4":
+        return
+    modes = {"stills": "кадри", "mixed": "смесен", "video": "видео"}
+    try:
+        if library.add_clip(entry["song_job_id"], video, f"клип {modes.get(entry.get('mode'), '')} {entry.get('aspect', '')} {project[-15:]}"):
+            entry["in_library"] = True
+            _atelier_projects_file().write_text(json.dumps(projects, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError as exc:
+        logger.warning("Library copy of Atelier clip %s failed: %s", project, exc)
+
+
 @app.get("/api/v1/atelier/musicvideo/{project}")
 async def atelier_project(project: str):
     try:
-        return await atelier.status(settings.atelier_base_url, project)
+        state = await atelier.status(settings.atelier_base_url, project)
     except atelier.AtelierError as exc:
         raise _atelier_error(exc) from exc
+    await asyncio.to_thread(_collect_atelier_clip, project, state)
+    return state
+
+
+@app.get("/api/v1/library")
+async def library_overview():
+    root = library.library_root()
+    songs = sorted((p.name for p in root.iterdir() if p.is_dir()), key=str.lower) if root.is_dir() else []
+    return {"root": str(root), "songs": songs}
+
+
+@app.post("/api/v1/library/open")
+async def library_open(job_id: str | None = Query(default=None)):
+    """Open the library (or one song's folder) in Explorer. Local desktop use only."""
+    folder = library.library_dir_for(job_id) if job_id else library.library_root()
+    if job_id and (not folder or not folder.is_dir()):
+        folder = await asyncio.to_thread(library.publish_song, job_id)
+    if not folder:
+        raise HTTPException(404, "Песента още няма папка.")
+    folder.mkdir(parents=True, exist_ok=True)
+    await asyncio.to_thread(library.open_in_explorer, folder)
+    return {"opened": str(folder)}
 
 
 @app.get("/api/v1/atelier/musicvideo/{project}/video")

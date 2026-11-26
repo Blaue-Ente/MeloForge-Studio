@@ -12,6 +12,7 @@ agent can create a song end to end:
     python -m app.cli voices
     python -m app.cli voice-add me.wav --name "My voice" --i-own-this-voice
     python -m app.cli sing --song <song job id> --voice <voice id> --semitones 0 --out ./out
+    python -m app.cli library                       (copy finished songs to Music\MeloForge)
     python -m app.cli export-song <song job id> --to ./package      (meloforge.song/1 for Atelier)
     python -m app.cli clip <song job id> --mode stills --local-only  (Atelier music video; --confirm to start)
 
@@ -258,6 +259,17 @@ def cmd_clip(args) -> int:
     return _print(state, 0 if state.get("status") == "done" else 1)
 
 
+def cmd_library(_args) -> int:
+    from app.services import jobs, library
+
+    folders = []
+    for job in jobs.list_recent(kind="song", limit=1000):
+        folder = library.publish_song(job.id) if job.status == "completed" else None
+        if folder:
+            folders.append(str(folder))
+    return _print({"root": str(library.library_root()), "songs": folders})
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="meloforge", description="MeloForge song generation CLI (JSON output)")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -334,6 +346,7 @@ def build_parser() -> argparse.ArgumentParser:
     sing_cmd.add_argument("--out")
     sing_cmd.set_defaults(func=cmd_sing)
 
+    sub.add_parser("library", help="Copy all finished songs to the readable library folder").set_defaults(func=cmd_library)
     export_cmd = sub.add_parser("export-song", help="Export a meloforge.song/1 package (song.json, master, aligned stems)")
     export_cmd.add_argument("song")
     export_cmd.add_argument("--to", help="Target folder (default: data/songs/<id>/package)")
