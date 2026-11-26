@@ -572,7 +572,7 @@ async def get_job(job_id: str):
             elif provider_result["status"] == 2:
                 job = jobs.update(job.id, status="failed", error="ACE-Step не успя да генерира песента.") or job
             else:
-                progress.record(job.id, provider_result.get("progress", 0.0) * 0.95, provider_result.get("stage") or "")
+                progress.record(job.id, progress.ace_step_fraction(provider_result.get("progress", 0.0)), provider_result.get("stage") or "")
                 job = jobs.get(job.id) or job
         except Exception:
             # Provider polling is read-only; transient failures leave the job recoverable.

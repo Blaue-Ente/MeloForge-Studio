@@ -24,7 +24,7 @@ def test_eta_from_measured_fraction(monkeypatch, tmp_path):
     jobs.update(job.id, status="running")
     progress.record(job.id, 0.5, "Generating music...")
     est = progress.estimate(jobs.get(job.id))
-    assert est["pct"] == 50.0 and est["stage_label"] == "Композиране" and 95 <= est["eta_seconds"] <= 105
+    assert est["pct"] == 50.0 and est["stage_label"] == "Композиране" and 60 <= est["eta_seconds"] <= 140
 
 
 def test_eta_before_progress_uses_learned_pace(monkeypatch, tmp_path):
@@ -74,3 +74,10 @@ def test_edit_lyrics_of_finished_song(monkeypatch, tmp_path):
     assert data["result"]["lyrics"] == "[Verse]\nнов ред" and data["result"]["lyrics_edited"]
     assert (folder / "lyrics.txt").read_text(encoding="utf-8") == "[Verse]\nнов ред\n"
     assert not (folder / "lyric-timing.json").exists()
+
+
+def test_ace_step_scale_and_stage_labels():
+    assert progress.ace_step_fraction(0.5) == 0.10 and abs(progress.ace_step_fraction(0.8) - 0.85) < 1e-9
+    assert progress.ace_step_fraction(1.0) == 0.95
+    assert progress.stage_label("Generating music (batch size: 1)...") == "Композиране"
+    assert progress.stage_label("Decoding audio...") == "Декодиране на звука"

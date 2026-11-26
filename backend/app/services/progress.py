@@ -31,6 +31,30 @@ STAGE_LABELS = {
 }
 
 
+def stage_label(stage: str) -> str:
+    for key, label in STAGE_LABELS.items():
+        if stage == key or (key.endswith("...") and stage.startswith(key[:-3])):
+            return label
+    lowered = (stage or "").lower()
+    if lowered.startswith("generating"):
+        return "Композиране"
+    if lowered.startswith("decoding"):
+        return "Декодиране на звука"
+    if lowered.startswith("prepar") or lowered.startswith("encod"):
+        return "Подготовка"
+    return stage or "Работи"
+
+
+def ace_step_fraction(raw: float) -> float:
+    """ACE-Step reports ~0.5 when diffusion starts and 0.8 when decoding starts; spread that evenly."""
+    raw = max(0.0, min(1.0, raw))
+    if raw < 0.5:
+        return raw / 0.5 * 0.10
+    if raw < 0.8:
+        return 0.10 + (raw - 0.5) / 0.3 * 0.75
+    return 0.85 + (raw - 0.8) / 0.2 * 0.10
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -80,18 +104,20 @@ def estimate(job) -> dict | None:
     stage = info.get("stage") or ("mastering" if job.status == "mastering" else "queued" if job.status == "queued" else "")
     if job.status == "mastering":
         fraction = max(fraction, 0.95)
+    pace_eta = max(0.0, expected - elapsed)
     if fraction >= 0.05:
-        total = elapsed / fraction
-        eta = max(0.0, total - elapsed)
+        # Blend the measured pace with the learned one; trust the measurement more as the job advances.
+        measured_eta = max(0.0, elapsed / fraction - elapsed)
+        eta = fraction * measured_eta + (1 - fraction) * pace_eta
     else:
-        eta = max(0.0, expected - elapsed)
+        eta = pace_eta
         fraction = max(fraction, min(0.9, elapsed / expected)) if expected else fraction
     if job.status == "mastering":
         eta = min(eta, MASTERING_SECONDS)
     return {
         "pct": round(min(99.0, fraction * 100), 1),
         "stage": stage,
-        "stage_label": STAGE_LABELS.get(stage, stage or "Работи"),
+        "stage_label": stage_label(stage),
         "eta_seconds": int(round(eta)),
         "elapsed_seconds": int(round(elapsed)),
     }
