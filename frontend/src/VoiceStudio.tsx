@@ -3,8 +3,9 @@ import { Cloud, Mic, Square, Trash2, Upload, UserRound, Users } from "lucide-rea
 
 type Voice = { id: string; name: string; reference_seconds: number; created_at: number; source?: string };
 type Section = { index: number; label: string; lines: number; first_line: string };
+type Line = { index: number; section: number; text: string };
 type ElVoice = { voice_id: string; name: string; category?: string; gender?: string; accent?: string; description?: string };
-const PART_LABELS: Record<string, string> = { A: "Глас А", B: "Глас Б", AB: "А + Б заедно", choir: "Хор", original: "Оригиналният AI глас" };
+const PART_LABELS: Record<string, string> = { A: "Глас А", B: "Глас Б", AB: "А + Б заедно", harmony: "А + хармония", choir: "Хор", original: "Оригиналният AI глас" };
 type Engine = { installed: boolean; models_downloaded: boolean; install_hint: string | null; license: string };
 type SongLike = { id: string; status: string; payload: { instrumental?: boolean; mode?: string } };
 
@@ -31,6 +32,11 @@ export function VoiceStudio({ song, onCreated }: { song: SongLike; onCreated: (j
   const [sections, setSections] = useState<Section[]>([]);
   const [duetDefault, setDuetDefault] = useState<Record<string, string>>({});
   const [parts, setParts] = useState<Record<string, string>>({});
+  const [lines, setLines] = useState<Line[]>([]);
+  const [lineParts, setLineParts] = useState<Record<string, string>>({});
+  const [openSection, setOpenSection] = useState<number | null>(null);
+  const [harmony, setHarmony] = useState("third");
+  const [songKey, setSongKey] = useState<string | null>(null);
   const [elConfigured, setElConfigured] = useState(false);
   const [elKey, setElKey] = useState("");
   const [elVoices, setElVoices] = useState<ElVoice[]>([]);
@@ -45,8 +51,9 @@ export function VoiceStudio({ song, onCreated }: { song: SongLike; onCreated: (j
     setVoiceId((current) => current && (data.voices || []).some((item: Voice) => item.id === current) ? current : data.voices?.[0]?.id || "");
   }).catch(() => undefined);
   useEffect(() => { void load(); void fetch("/api/v1/elevenlabs/status").then((r) => r.json()).then((d) => { setElConfigured(Boolean(d.configured)); setElChars(d.sample_characters || 250); }).catch(() => undefined); return () => { if (timer.current) window.clearInterval(timer.current); }; }, []);
-  useEffect(() => { void fetch(`/api/v1/song-sections/${song.id}`).then((r) => r.ok ? r.json() : null).then((d) => { if (!d) return; setSections((d.sections || []).filter((item: Section) => item.lines > 0)); setDuetDefault(d.duet_default || {}); }).catch(() => undefined); }, [song.id]);
-  useEffect(() => { setParts(duet ? { ...duetDefault } : Object.fromEntries(sections.map((item) => [String(item.index), "A"]))); }, [duet, duetDefault, sections]);
+  useEffect(() => { void fetch(`/api/v1/song-sections/${song.id}`).then((r) => r.ok ? r.json() : null).then((d) => { if (!d) return; setSections((d.sections || []).filter((item: Section) => item.lines > 0)); setDuetDefault(d.duet_default || {}); setLines(d.lines || []); setSongKey(d.key || null); }).catch(() => undefined); }, [song.id]);
+  useEffect(() => { setParts(duet ? { ...duetDefault } : Object.fromEntries(sections.map((item) => [String(item.index), "A"]))); setLineParts({}); }, [duet, duetDefault, sections]);
+  const modeOptions = Object.entries(PART_LABELS).filter(([mode]) => duet || !["B", "AB"].includes(mode));
 
   function choirOnChoruses() {
     setParts((current) => { const next = { ...current }; sections.forEach((item) => { if (/^\s*(chorus|припев|refrain|hook)\b/i.test(item.label)) next[String(item.index)] = "choir"; }); return next; });
@@ -125,7 +132,7 @@ export function VoiceStudio({ song, onCreated }: { song: SongLike; onCreated: (j
   async function singInVoice() {
     setBusy(true); setError("");
     try {
-      const response = await fetch("/api/v1/music/voice-swap", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ song_job_id: song.id, voice_id: voiceId, semitones, quality, voice_b_id: duet ? voiceB || null : null, semitones_b: semitonesB, parts: Object.values(parts).some((mode) => mode !== "A") ? parts : {} }) });
+      const response = await fetch("/api/v1/music/voice-swap", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ song_job_id: song.id, voice_id: voiceId, semitones, quality, voice_b_id: duet ? voiceB || null : null, semitones_b: semitonesB, parts: Object.values(parts).some((mode) => mode !== "A") ? parts : {}, line_parts: lineParts, harmony }) });
       const data = await response.json();
       if (!response.ok) throw new Error(typeof data.detail === "string" ? data.detail : "Обработката не започна.");
       window.localStorage.setItem("meloforge.latestSongJob", data.id);
@@ -145,9 +152,12 @@ export function VoiceStudio({ song, onCreated }: { song: SongLike; onCreated: (j
       <div className="mode-switch"><button className={!duet ? "active" : ""} onClick={() => setDuet(false)}><UserRound size={14} /> Соло</button><button className={duet ? "active" : ""} disabled={voices.length < 2} title={voices.length < 2 ? "Добави поне два гласа" : ""} onClick={() => setDuet(true)}><Users size={14} /> Дует</button></div>
       {duet && <div className="form-grid"><label>Глас Б<select value={voiceB} onChange={(event) => setVoiceB(event.target.value)}><option value="">— избери —</option>{voices.filter((voice) => voice.id !== voiceId).map((voice) => <option key={voice.id} value={voice.id}>{voice.name}</option>)}</select></label><label>Височина Б <span>{semitonesB > 0 ? `+${semitonesB}` : semitonesB}</span><input className="slider" type="range" min="-12" max="12" step="1" value={semitonesB} onChange={(event) => setSemitonesB(Number(event.target.value))} /></label></div>}
       {sections.length > 0 && <details className="parts-box" open={duet}><summary>Кой какво пее ({sections.length} части)</summary>
-        <table className="parts-table"><tbody>{sections.map((item) => <tr key={item.index}><td><b>{item.label}</b><small>{item.first_line}</small></td><td><select value={parts[String(item.index)] || "A"} onChange={(event) => setParts({ ...parts, [String(item.index)]: event.target.value })}>{Object.entries(PART_LABELS).filter(([mode]) => duet || !["B", "AB"].includes(mode)).map(([mode, label]) => <option key={mode} value={mode}>{label}</option>)}</select></td></tr>)}</tbody></table>
+        <table className="parts-table"><tbody>{sections.map((item) => <tr key={item.index}><td><b>{item.label}</b><small>{item.first_line}</small></td><td><select value={parts[String(item.index)] || "A"} onChange={(event) => setParts({ ...parts, [String(item.index)]: event.target.value })}>{modeOptions.map(([mode, label]) => <option key={mode} value={mode}>{label}</option>)}</select>
+          <button className="link-button" onClick={() => setOpenSection(openSection === item.index ? null : item.index)}>{openSection === item.index ? "скрий редовете" : "по редове"}{lines.some((line) => line.section === item.index && lineParts[String(line.index)]) ? " •" : ""}</button></td></tr>)}</tbody></table>
+        {openSection !== null && <table className="parts-table lines-table"><tbody>{lines.filter((line) => line.section === openSection).map((line) => <tr key={line.index}><td><small className="line-text">{line.text}</small></td><td><select value={lineParts[String(line.index)] || ""} onChange={(event) => { const next = { ...lineParts }; if (event.target.value) next[String(line.index)] = event.target.value; else delete next[String(line.index)]; setLineParts(next); }}><option value="">като частта</option>{modeOptions.map(([mode, label]) => <option key={mode} value={mode}>{label}</option>)}</select></td></tr>)}</tbody></table>}
+        <label>Хармония (за „А + хармония“ и хора) <span>{songKey ? `в тоналност ${songKey}` : "тоналността е неизвестна, хармонията се пропуска"}</span><select value={harmony} onChange={(event) => setHarmony(event.target.value)}><option value="third">Терца над мелодията</option><option value="sixth">Секста над мелодията</option><option value="fifth">Квинта над мелодията</option><option value="off">Без хармония (само унисон)</option></select></label>
         <button className="secondary-button compact" onClick={choirOnChoruses}>Хор във всички припеви</button>
-        <p className="inline-notice">Хорът наслоява няколко леко разместени копия от наличните гласове. Частите се разпознават автоматично по текста (Whisper върху вокала), отнема ~1 мин.</p></details>}
+        <p className="inline-notice">Хорът наслоява няколко леко разместени копия от наличните гласове плюс хармония в тоналността на песента (нотите се разпознават от вокала). Частите се разпознават автоматично по текста (Whisper върху вокала), отнема ~1 мин.</p></details>}
       <button className="primary-button large" disabled={busy || !engine?.installed || !voiceId || song.status !== "completed" || (duet && !voiceB)} onClick={() => void singInVoice()}><Mic size={17} />{busy ? "Стартирам…" : "Изпей песента с този глас"}</button></>}
     <div className="voice-add"><b>{voices.length ? "Добави нов глас" : "Създай своя глас"}</b>
       <p className="inline-notice">{READ_ALOUD} Нужни са 10–30 сек. в тиха стая, без музика и ехо.</p>

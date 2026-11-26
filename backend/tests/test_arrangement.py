@@ -54,3 +54,25 @@ def test_plan_layers_for_duet_and_choir(tmp_path):
 def test_is_chorus_skips_pre_and_post_chorus():
     assert arrangement.is_chorus("Chorus") and arrangement.is_chorus("Chorus 2") and arrangement.is_chorus("Припев")
     assert not arrangement.is_chorus("Pre-Chorus") and not arrangement.is_chorus("Post-Chorus") and not arrangement.is_chorus("Verse 1")
+
+
+def test_line_overrides_carve_section_spans():
+    spans = [{"index": 0, "start": 0.0, "end": 20.0}, {"index": 1, "start": 20.0, "end": 40.0}]
+    timed = [{"start": 5.0, "end": 8.0}, {"start": 10.0, "end": 13.0}, {"start": 25.0, "end": 28.0}]
+    pieces, parts = arrangement.apply_line_parts(spans, {0: "A", 1: "AB"}, timed, {1: "B"})
+    assert [(p["start"], p["end"], parts[p["index"]]) for p in pieces] == [(0.0, 9.8, "A"), (9.8, 13.2, "B"), (13.2, 20.0, "A"), (20.0, 40.0, "AB")]
+
+
+def test_key_parsing_and_diatonic_thirds_stay_in_key():
+    tonic, scale = arrangement.parse_key("D minor")
+    assert tonic == 2 and scale == [2, 4, 5, 7, 9, 10, 0]
+    # D->F, E->G, F->A, G->Bb, A->C, Bb->D, C->E in D minor
+    assert [arrangement.diatonic_shift(m, scale, 2) for m in (62, 64, 65, 67, 69, 70, 72)] == [3, 3, 4, 3, 3, 4, 4]
+    assert arrangement.parse_key("F# major")[0] == 6 and arrangement.parse_key("Bbm")[1][2] == 1 and arrangement.parse_key("") is None
+
+
+def test_harmony_segments_group_by_shift_and_intersect():
+    key = arrangement.parse_key("C major")
+    groups = arrangement.harmony_segments([[0.0, 1.0, 60], [1.02, 2.0, 64], [2.5, 3.0, 62]], key, "third")
+    assert groups == {4: [(0.0, 1.0)], 3: [(1.02, 2.0), (2.5, 3.0)]}  # C->E major third, E->G and D->F minor thirds
+    assert arrangement.intersect([(1.02, 2.0), (2.5, 3.0)], [(1.5, 2.7)]) == [(1.5, 2.0), (2.5, 2.7)]

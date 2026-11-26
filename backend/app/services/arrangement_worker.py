@@ -25,6 +25,26 @@ def words(job):
             out.append({"start": round(w.start, 3), "end": round(w.end, 3), "word": w.word.strip(), "p": round(w.probability, 3)})
     return {"words": out}
 
+def notes(job):
+    # Sung notes from the vocal stem: pYIN f0 -> runs of the same rounded MIDI pitch.
+    import numpy as np, librosa
+    y, sr = librosa.load(job["audio"], sr=22050, mono=True)
+    hop = 256
+    f0, voiced, _ = librosa.pyin(y, fmin=65.0, fmax=1050.0, sr=sr, hop_length=hop, frame_length=2048)
+    times = librosa.times_like(f0, sr=sr, hop_length=hop)
+    out, cur = [], None
+    for t, hz, v in zip(times, f0, voiced):
+        midi = int(round(librosa.hz_to_midi(hz))) if v and hz == hz else None
+        if cur and midi == cur[2]:
+            cur[1] = float(t)
+            continue
+        if cur and cur[1] - cur[0] >= 0.08:
+            out.append([round(cur[0], 3), round(cur[1] + hop / sr, 3), cur[2]])
+        cur = [float(t), float(t), midi] if midi is not None else None
+    if cur and cur[1] - cur[0] >= 0.08:
+        out.append([round(cur[0], 3), round(cur[1] + hop / sr, 3), cur[2]])
+    return {"notes": out}
+
 def mix(job):
     import numpy as np, soundfile as sf
     sr = 44100
@@ -72,6 +92,6 @@ def mix(job):
     return {"peak": round(peak, 3)}
 
 job = json.loads(sys.argv[1])
-result = {"words": words, "mix": mix}[job["cmd"]](job)
+result = {"words": words, "notes": notes, "mix": mix}[job["cmd"]](job)
 sys.stdout.write("\n@@RESULT@@" + json.dumps(result, ensure_ascii=False))
 '''

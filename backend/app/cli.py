@@ -197,7 +197,10 @@ def cmd_sing(args) -> int:
     from app.services.arrangement import is_chorus
 
     body = {"song_job_id": args.song, "voice_id": args.voice, "semitones": args.semitones, "quality": args.quality,
-            "master_preset": args.preset}
+            "master_preset": args.preset, "harmony": args.harmony}
+    for item in args.line or []:
+        index, _, mode = item.partition("=")
+        body.setdefault("line_parts", {})[int(index)] = mode
     started = time.monotonic()
     with _client() as client:
         if args.voice_b or args.choir:
@@ -356,6 +359,10 @@ def build_parser() -> argparse.ArgumentParser:
     sing_cmd.add_argument("--voice-b", help="Second voice for a duet (verses alternate, choruses together)")
     sing_cmd.add_argument("--semitones-b", type=int, default=0)
     sing_cmd.add_argument("--choir", action="store_true", help="Choir on every chorus")
+    sing_cmd.add_argument("--harmony", choices=["off", "third", "sixth", "fifth"], default="third",
+                          help="Diatonic harmony used by choir/harmony parts (song key from metadata)")
+    sing_cmd.add_argument("--line", action="append", metavar="N=MODE",
+                          help="Per-line override, e.g. --line 3=B --line 7=harmony (indices from /song-sections)")
     sing_cmd.add_argument("--quality", choices=["fast", "balanced", "best"], default="balanced")
     sing_cmd.add_argument("--preset", choices=["streaming", "apple", "broadcast"], default="streaming")
     sing_cmd.add_argument("--out")

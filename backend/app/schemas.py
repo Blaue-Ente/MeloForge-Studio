@@ -97,7 +97,11 @@ class VoiceSongRequest(BaseModel):
     # Duet / choir: optional second voice and per-section parts {section index: mode}.
     voice_b_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{32}$")
     semitones_b: int = Field(default=0, ge=-12, le=12)
-    parts: dict[int, Literal["A", "B", "AB", "choir", "original"]] = Field(default_factory=dict, max_length=40)
+    parts: dict[int, Literal["A", "B", "AB", "harmony", "choir", "original"]] = Field(default_factory=dict, max_length=40)
+    # Per-line overrides {line index: mode}; line indices follow /song-sections "lines".
+    line_parts: dict[int, Literal["A", "B", "AB", "harmony", "choir", "original"]] = Field(default_factory=dict, max_length=200)
+    # Diatonic harmony (in the song's key) used by "harmony" and "choir" parts.
+    harmony: Literal["off", "third", "fifth", "sixth"] = "third"
     quality: Literal["fast", "balanced", "best"] = "balanced"
     vocal_gain_db: float = Field(default=0.0, ge=-6, le=6)
     master_preset: Literal["streaming", "apple", "broadcast"] = "streaming"

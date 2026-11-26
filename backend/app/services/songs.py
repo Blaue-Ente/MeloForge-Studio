@@ -114,10 +114,14 @@ def finalize_voice_song(job_id: str, source_job_id: str, voice: dict, voice_b: d
     if voice_b:
         voices["B"] = (voice_dir(voice_b["id"]) / "reference.wav", int(payload.get("semitones_b", 0)))
     parts = {int(index): mode for index, mode in (payload.get("parts") or {}).items()}
+    line_parts = {int(index): mode for index, mode in (payload.get("line_parts") or {}).items()}
+    metadata = (source.result or {}).get("metadata") or {}
+    keyscale = metadata.get("keyscale") or source.payload.get("key_scale") or ""
     stats = sing_arrangement(
         source_audio=audio, voices=voices, output_dir=folder, parts=parts, lyrics=lyrics,
         language=source.payload.get("language") or "bg", quality=payload.get("quality", "balanced"),
-        vocal_gain_db=float(payload.get("vocal_gain_db", 0.0)),
+        vocal_gain_db=float(payload.get("vocal_gain_db", 0.0)), line_parts=line_parts,
+        harmony=payload.get("harmony", "third"), keyscale=keyscale,
     )
     if lyrics and lyrics != "[Instrumental]":
         (folder / "lyrics.txt").write_text(lyrics + "\n", encoding="utf-8", newline="\n")

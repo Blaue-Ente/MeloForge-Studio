@@ -308,7 +308,8 @@ def sing_in_voice(*, source_audio: Path, reference: Path, output_dir: Path, semi
 
 def sing_arrangement(*, source_audio: Path, voices: dict[str, tuple[Path, int]], output_dir: Path,
                      parts: dict[int, str] | None = None, lyrics: str = "", language: str = "bg",
-                     quality: str = "balanced", vocal_gain_db: float = 0.0) -> dict:
+                     quality: str = "balanced", vocal_gain_db: float = 0.0,
+                     line_parts: dict[int, str] | None = None, harmony: str = "off", keyscale: str = "") -> dict:
     """Re-sing a song with one or two cloned voices; sections may be solo, together, original or choir.
 
     ``voices`` maps "A"/"B" to (reference wav, semitone shift). ``parts`` maps lyric
@@ -328,7 +329,9 @@ def sing_arrangement(*, source_audio: Path, voices: dict[str, tuple[Path, int]],
     timings["separation_seconds"] = round(time.time() - started, 1)
     length = probe_duration(instrumental)
     parts = parts or {}
-    needed = {"A"} | {voice for mode in parts.values() for voice in (("A", "B") if mode in {"AB", "choir"} else (mode,))}
+    line_parts = line_parts or {}
+    all_modes = list(parts.values()) + list(line_parts.values())
+    needed = {"A"} | {voice for mode in all_modes for voice in (("A", "B") if mode in {"AB", "choir"} else ("A",) if mode == "harmony" else (mode,))}
     needed = {voice for voice in needed if voice in voices}
     started = time.time()
     converted: dict[str, Path] = {}
@@ -344,7 +347,7 @@ def sing_arrangement(*, source_audio: Path, voices: dict[str, tuple[Path, int]],
         converted[key] = work / f"voice-{key}.wav"
         align_stem(raw, converted[key], length_seconds=length, gain_db=gains[key])
     timings["conversion_seconds"] = round(time.time() - started, 1)
-    simple = not parts or set(parts.values()) <= {"A"}
+    simple = set(all_modes) <= {"A"}
     sections_used = None
     if simple:
         vocal_mix = converted["A"]
@@ -353,12 +356,36 @@ def sing_arrangement(*, source_audio: Path, voices: dict[str, tuple[Path, int]],
         words = arrangement.transcribe_words(vocals, language=language, cache=work / "words.json")
         timed = arrangement.align_lyrics(lyrics, words, length)
         spans = arrangement.section_spans(lyrics, timed, length)
+        sections_used = [{"label": s["label"], "start": s["start"], "end": s["end"], "mode": parts.get(s["index"], "A")} for s in spans]
+        if line_parts:
+            spans, parts = arrangement.apply_line_parts(spans, parts, timed, line_parts)
         original = work / "voice-original.wav"
         align_stem(vocals, original, length_seconds=length)
         layers = arrangement.plan_layers(spans=spans, parts=parts, converted=converted, original=original)
+        key = arrangement.parse_key(keyscale)
+        harmony_windows = {mode: [(s["start"], s["end"]) for s in spans if parts.get(s["index"]) == mode] for mode in ("harmony", "choir")}
+        if harmony != "off" and key and (harmony_windows["harmony"] or harmony_windows["choir"]):
+            notes = arrangement.run_worker({"cmd": "notes", "audio": str(vocals)})["notes"]
+            groups = arrangement.harmony_segments(notes, key, harmony)
+            for voice, pan in (("A", -0.35), ("B", 0.35)):
+                if voice not in converted:
+                    continue
+                windows = harmony_windows["choir"] + (harmony_windows["harmony"] if voice == "A" else [])
+                for shift, segments in groups.items():
+                    chosen = arrangement.intersect(segments, windows)
+                    if not chosen:
+                        continue
+                    shifted = work / f"harmony-{voice}-{shift}.wav"
+                    if not shifted.is_file():
+                        _run([_ffmpeg(), "-y", "-hide_banner", "-loglevel", "error", "-i", str(converted[voice]), "-af",
+                              f"rubberband=pitch={2 ** (shift / 12):.6f}:formant=preserved:pitchq=quality",
+                              "-c:a", "pcm_s16le", str(shifted)], timeout=600)
+                    layers.append({"path": str(shifted), "segments": chosen, "gain_db": -6.0, "pan": pan})
+            timings["harmony"] = {"interval": harmony, "key": keyscale, "notes": len(notes)}
         vocal_mix = work / "vocal-mix.wav"
         arrangement.run_worker({"cmd": "mix", "length": length, "out": str(vocal_mix), "layers": layers})
-        sections_used = [{"label": s["label"], "start": s["start"], "end": s["end"], "mode": parts.get(s["index"], "A")} for s in spans]
+        if line_parts:
+            timings["line_overrides"] = len(line_parts)
         timings["arrangement_seconds"] = round(time.time() - started, 1)
         timings["lyric_lines_heard"] = sum(1 for line in timed if line["heard"])
         timings["lyric_lines"] = len(timed)

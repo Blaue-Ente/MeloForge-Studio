@@ -20,7 +20,7 @@ from pathlib import Path
 
 from app.services.arrangement_worker import WORKER_SOURCE
 
-PART_MODES = ("A", "B", "AB", "choir", "original")
+PART_MODES = ("A", "B", "AB", "harmony", "choir", "original")
 _TAG = re.compile(r"^\s*\[([^\]\n]{1,60})\]\s*$")
 _WORD = re.compile(r"[^\w']+", re.UNICODE)
 
@@ -229,7 +229,7 @@ def plan_layers(*, spans: list[dict], parts: dict[int, str], converted: dict[str
         if mode == "choir":
             choir.append(span)
             continue
-        voices = [v for v in ("A", "B") if v in converted] if mode == "AB" else [mode]
+        voices = [v for v in ("A", "B") if v in converted] if mode == "AB" else ["A"] if mode == "harmony" else [mode]
         for voice in voices:
             key = voice if voice in converted or voice == "original" else "A"
             segments.setdefault((key, len(voices) > 1), []).append(span)
@@ -246,3 +246,87 @@ def plan_layers(*, spans: list[dict], parts: dict[int, str], converted: dict[str
             layers.append({"path": str(voice), "segments": choir, "delay_ms": delay, "cents": cents, "pan": pan,
                            "gain_db": -1.0 if index == 0 else -7.5})
     return layers
+
+
+# ------------------------------------------------------------------ per-line parts
+
+def apply_line_parts(spans: list[dict], parts: dict[int, str], timed: list[dict],
+                     line_parts: dict[int, str]) -> tuple[list[dict], dict[int, str]]:
+    """Carve per-line overrides out of the section spans.
+
+    Returns pieces (index, start, end) that tile the song plus their modes, so the
+    normal ``plan_layers`` can mix a duet line by line.
+    """
+    pieces = [(s["start"], s["end"], parts.get(s["index"], "A")) for s in spans]
+    for line_index, mode in sorted(line_parts.items()):
+        if line_index < 0 or line_index >= len(timed):
+            continue
+        line = timed[line_index]
+        start, end = max(0.0, line["start"] - 0.2), line["end"] + 0.2
+        carved = []
+        for a, b, m in pieces:
+            if b <= start or a >= end:
+                carved.append((a, b, m))
+                continue
+            if a < start:
+                carved.append((a, start, m))
+            carved.append((max(a, start), min(b, end), mode))
+            if b > end:
+                carved.append((end, b, m))
+        pieces = carved
+    out_spans, out_parts = [], {}
+    for index, (a, b, m) in enumerate(p for p in pieces if p[1] - p[0] > 0.01):
+        out_spans.append({"index": index, "start": round(a, 3), "end": round(b, 3)})
+        out_parts[index] = m
+    return out_spans, out_parts
+
+
+# ------------------------------------------------------------------ diatonic harmony
+
+_NOTE = {"c": 0, "d": 2, "e": 4, "f": 5, "g": 7, "a": 9, "b": 11}
+_MAJOR = [0, 2, 4, 5, 7, 9, 11]
+_MINOR = [0, 2, 3, 5, 7, 8, 10]
+
+
+def parse_key(keyscale: str | None) -> tuple[int, list[int]] | None:
+    """'D minor' / 'F# major' / 'Bbm' -> (tonic pitch class, scale pitch classes)."""
+    text = (keyscale or "").strip().lower().replace("♯", "#").replace("♭", "b")
+    match = re.match(r"^([a-g])\s*([#b]?)\s*(m(?:in(?:or)?)?|maj(?:or)?)?\b", text)
+    if not match:
+        return None
+    tonic = (_NOTE[match.group(1)] + {"#": 1, "b": -1, "": 0}[match.group(2)]) % 12
+    minor = bool(match.group(3)) and match.group(3).startswith("m") and not match.group(3).startswith("maj")
+    return tonic, [(tonic + step) % 12 for step in (_MINOR if minor else _MAJOR)]
+
+
+def diatonic_shift(midi: int, scale: list[int], steps: int) -> int:
+    """Semitones from ``midi`` to the scale note ``steps`` degrees above (2 = third, 4 = fifth)."""
+    pc = midi % 12
+    degree = min(range(7), key=lambda d: min((pc - scale[d]) % 12, (scale[d] - pc) % 12))
+    target = scale[(degree + steps) % 7]
+    return (target - scale[degree]) % 12 or 12
+
+
+def harmony_segments(notes: list[list], key: tuple[int, list[int]], interval: str = "third") -> dict[int, list[tuple[float, float]]]:
+    """Group sung notes by the semitone shift that keeps the harmony in key."""
+    steps = {"third": 2, "fifth": 4, "sixth": 5}.get(interval, 2)
+    _, scale = key
+    groups: dict[int, list[tuple[float, float]]] = {}
+    for start, end, midi in notes:
+        shift = diatonic_shift(int(midi), scale, steps)
+        bucket = groups.setdefault(shift, [])
+        if bucket and start - bucket[-1][1] < 0.06:
+            bucket[-1] = (bucket[-1][0], end)
+        else:
+            bucket.append((start, end))
+    return groups
+
+
+def intersect(segments: list[tuple[float, float]], windows: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    out = []
+    for a, b in segments:
+        for c, d in windows:
+            lo, hi = max(a, c), min(b, d)
+            if hi - lo > 0.02:
+                out.append((lo, hi))
+    return out

@@ -630,6 +630,8 @@ async def song_sections(job_id: str):
     counts = {s["index"]: sum(1 for line in lines if line["section"] == s["index"]) for s in sections}
     return {"sections": [{"index": s["index"], "label": s["label"], "lines": counts[s["index"]],
                           "first_line": next((line["text"] for line in lines if line["section"] == s["index"]), "")} for s in sections],
+            "lines": [{"index": index, "section": line["section"], "text": line["text"]} for index, line in enumerate(lines)],
+            "key": ((job.result or {}).get("metadata") or {}).get("keyscale") or job.payload.get("key_scale") or None,
             "duet_default": {str(k): v for k, v in arrangement.default_parts([{**s, "lines": counts[s["index"]]} for s in sections], duet=True).items()}}
 
 
@@ -721,7 +723,7 @@ async def create_voice_song(request: VoiceSongRequest, background_tasks: Backgro
     voice_b = voice_clone.get_voice(request.voice_b_id) if request.voice_b_id else None
     if request.voice_b_id and not voice_b:
         raise HTTPException(404, "Вторият глас не е намерен.")
-    if any(mode in {"B", "AB"} for mode in request.parts.values()) and not voice_b:
+    if any(mode in {"B", "AB"} for mode in [*request.parts.values(), *request.line_parts.values()]) and not voice_b:
         raise HTTPException(400, "За дует избери и втори глас.")
     if not shutil.which("ffmpeg"):
         raise HTTPException(503, "FFmpeg не е инсталиран.")
@@ -730,8 +732,9 @@ async def create_voice_song(request: VoiceSongRequest, background_tasks: Backgro
         "mode": "voice_swap", "source_song_id": source.id, "voice_id": voice["id"],
         "title": f"{base.get('title') or 'Песен'} ({voice.get('name')}{' & ' + voice_b.get('name') if voice_b else ''})"[:120], "prompt": base.get("prompt", ""),
         "genre": base.get("genre", ""), "duration_seconds": base.get("duration_seconds"), "lyrics": base.get("lyrics", ""),
-        **request.model_dump(exclude={"song_job_id", "voice_id", "parts"}),
+        **request.model_dump(exclude={"song_job_id", "voice_id", "parts", "line_parts"}),
         "parts": {str(index): mode for index, mode in request.parts.items()},
+        "line_parts": {str(index): mode for index, mode in request.line_parts.items()},
     }
     job = jobs.create("song", payload, 0)
     # No provider_task_id: the status poller leaves this job to the background worker.

@@ -23,7 +23,8 @@
 - [x] Duets: per-section voice A / B / both / original, sections found by Whisper lyric alignment
 - [x] Choir: detuned, delayed, panned doublings of the available voices on chosen sections
 - [x] fp16 BigVGAN vocoder (RTF 9.1 → 3.2 on RTX 2050); duet + choir of a 2:30 song in ~12 min
-- [ ] Per-line duet assignment and real harmony (third/fifth) for the choir
+- [x] Per-line duet overrides and diatonic harmony (third/sixth/fifth in the song key, pYIN notes + formant-preserving Rubber Band) for harmony/choir parts
+- [ ] Harmony below the melody and mixed intervals per chord (needs chord detection)
 - [ ] Faster voice conversion on 4 GB GPUs (fewer diffusion steps, chunked fp16) and optional fine-tuned personal voice model
 - [x] Agent CLI (`python -m app.cli`) and song history API
 - [ ] VoxCPM voice-over adapter (not a singing engine)
