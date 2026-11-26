@@ -59,7 +59,9 @@ async def create_chat_completion(spec: ProviderSpec, messages: list[dict[str, st
     if spec.name == "openrouter":
         headers["X-Title"] = "MeloForge Studio"
     payload = {"model": spec.model, "messages": messages, "max_tokens": max_tokens, "stream": False}
-    async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=15.0)) as client:
+    # Local models on a laptop CPU/GPU can need several minutes for a full song text.
+    read_timeout = 420.0 if spec.kind == "local" else 120.0
+    async with httpx.AsyncClient(timeout=httpx.Timeout(read_timeout, connect=15.0)) as client:
         response = await client.post(f"{spec.base_url.rstrip('/')}/chat/completions", headers=headers, json=payload)
         response.raise_for_status()
         data = response.json()

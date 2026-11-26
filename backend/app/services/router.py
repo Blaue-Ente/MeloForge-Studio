@@ -53,11 +53,16 @@ def choose_provider(request: ChatRequest, settings: Settings) -> tuple[ProviderS
     elif mode == "hybrid" and local_ready and input_tokens <= 1800:
         selected = local
     else:
-        if mode == "local_first" and not settings.allow_cloud_fallback:
+        local_last_resort = settings.local_llm_enabled and bool(local.model)
+        if mode == "local_first" and not settings.allow_cloud_fallback and not local_last_resort:
             raise RoutingError("local_unavailable", "Cloud fallback е изключен.", 409)
-        if not cloud_specs:
-            raise RoutingError("no_provider_available", "Няма конфигуриран облачен LLM доставчик.", 409)
-        if mode == "cloud_quality":
+        if (not cloud_specs or (mode == "local_first" and not settings.allow_cloud_fallback)) and local_last_resort:
+            # Last resort: the local model even when free RAM is under the comfort threshold
+            # (slower, but a fresh install without cloud keys still works).
+            selected = local
+        elif not cloud_specs:
+            raise RoutingError("no_provider_available", "Няма свързан AI модел за текст. Пусни Ollama или добави облачен ключ в Resource Manager.", 409)
+        elif mode == "cloud_quality":
             selected = next((s for s in cloud_specs if s.name == settings.primary_cloud_provider), cloud_specs[0])
         else:
             priced = [s for s in cloud_specs if estimate_cost(s, input_tokens, request.max_output_tokens) is not None]

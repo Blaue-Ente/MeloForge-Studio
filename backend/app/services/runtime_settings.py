@@ -13,6 +13,7 @@ _PROVIDER_FIELDS = {
     "novita": {"novita_model", "novita_input_usd_per_1m", "novita_output_usd_per_1m", "novita_video_cost_per_second_usd"},
     "nvidia": {"nvidia_model", "nvidia_input_usd_per_1m", "nvidia_output_usd_per_1m"},
     "huggingface": {"hf_model", "hf_input_usd_per_1m", "hf_output_usd_per_1m"},
+    "ollama": {"local_llm_enabled", "local_llm_model"},
     "ace_step": {"ace_step_enabled", "ace_step_base_url", "ace_step_model", "ace_step_cost_per_second_usd", "ace_step_lm_enabled"},
 }
 

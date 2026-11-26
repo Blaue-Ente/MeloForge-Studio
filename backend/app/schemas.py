@@ -61,6 +61,8 @@ class LyricsDraftRequest(BaseModel):
     themes: list[str] = Field(default_factory=list, max_length=8)
     structure: str = Field(default="", max_length=300)
     lyric_style: str = Field(default="", max_length=600)
+    # Free text from the person: what the song is about, for whom, who is singing.
+    story: str = Field(default="", max_length=1500)
 
 
 class TrendRequest(BaseModel):

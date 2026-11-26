@@ -81,7 +81,7 @@ def lyric_warnings(lyrics: str, duration_seconds: int) -> list[str]:
 
 def lyrics_writer_messages(
     *, prompt: str, genre: str, mood: str, language: str, duration_seconds: int, title: str = "",
-    themes: list[str] | None = None, structure: str = "", lyric_style: str = "",
+    themes: list[str] | None = None, structure: str = "", lyric_style: str = "", story: str = "",
 ) -> list[dict[str, str]]:
     """Prompt for an LLM that drafts singable, ACE-Step-tagged lyrics."""
     target_words = max(20, int(duration_seconds * 1.6))
@@ -91,7 +91,8 @@ def lyrics_writer_messages(
         "Use ACE-Step section tags on their own lines: [Intro], [Verse 1], [Pre-Chorus], [Chorus], "
         "[Verse 2], [Bridge], [Outro]. Keep lines short (4-9 syllables per line is ideal), "
         "use consistent meter and rhyme, repeat the chorus verbatim. "
-        "Output ONLY the lyrics with tags: no title line, no explanations, no markdown."
+        "First line: 'Title: <a short song title, 1-5 words, in the lyrics language>'. "
+        "Then ONLY the lyrics with tags: no explanations, no markdown."
     )
     user = (
         f"Language: {language_name} (write every sung line in {language_name}).\n"
@@ -100,6 +101,9 @@ def lyrics_writer_messages(
         f"Title: {title or 'none'}\n"
         f"Target length: about {duration_seconds} seconds, roughly {target_words} sung words in total."
     )
+    if story:
+        user += ("\nWhat the song must be about (from the person ordering it; follow it closely, keep names, "
+                 f"places and details they mention): {story}")
     if themes:
         user += "\nCurrent trending themes in this genre (use as inspiration, stay original): " + "; ".join(themes)
     if structure:
@@ -107,6 +111,15 @@ def lyrics_writer_messages(
     if lyric_style:
         user += f"\nLyric style: {lyric_style}"
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
+def extract_title(text: str) -> str:
+    """The 'Title: …' line the writer is asked to put first (empty when missing)."""
+    for line in text.splitlines()[:6]:
+        match = re.match(r"^\W*(?:title|заглавие)\s*:\s*(.+?)\W*$", line.strip(), re.I)
+        if match:
+            return match.group(1).strip().strip('"„“”«»')[:80]
+    return ""
 
 
 def clean_generated_lyrics(text: str) -> str:

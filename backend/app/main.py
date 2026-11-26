@@ -1,4 +1,5 @@
 import asyncio
+import dataclasses
 import logging
 import shutil
 import sys
@@ -28,7 +29,7 @@ from app.schemas import (
     VisualizerRequest,
     VoiceSongRequest,
 )
-from app.services import atelier, elevenlabs, jobs, library, voice_clone
+from app.services import atelier, elevenlabs, jobs, library, local_llm, voice_clone
 from app.services.ace_step import AceStepConfig
 from app.services.ace_step import list_models as ace_step_models
 from app.services.ace_step import song_status as ace_step_song_status
@@ -37,6 +38,7 @@ from app.services.composer import compose_song_video, lyrics_path, output_path
 from app.services.hardware import get_hardware_status, local_tool_status
 from app.services.lyrics import (
     clean_generated_lyrics,
+    extract_title,
     lyric_warnings,
     lyrics_writer_messages,
     structure_lyrics,
@@ -293,19 +295,51 @@ async def create_song_quote(request: SongRequest):
 @app.post("/api/v1/music/lyrics")
 async def draft_lyrics(request: LyricsDraftRequest):
     """Draft ACE-Step-tagged lyrics with the routed LLM (local first, budget-gated cloud)."""
-    messages = lyrics_writer_messages(prompt=request.prompt, genre=request.genre, mood=request.mood, language=request.language, duration_seconds=request.duration_seconds, title=request.title, themes=request.themes, structure=request.structure, lyric_style=request.lyric_style)
+    await asyncio.to_thread(local_llm.auto_enable, settings)
+    messages = lyrics_writer_messages(prompt=request.prompt, genre=request.genre, mood=request.mood, language=request.language, duration_seconds=request.duration_seconds, title=request.title, themes=request.themes, structure=request.structure, lyric_style=request.lyric_style, story=request.story)
     chat_request = ChatRequest(messages=messages, provider=request.provider, max_output_tokens=min(2048, 300 + request.duration_seconds * 6), max_cost_usd=request.max_cost_usd)
     try:
         selected, decision = choose_provider(chat_request, settings)
+        if selected.kind == "local":
+            # Use the largest installed model that fits the RAM free right now.
+            models = await asyncio.to_thread(local_llm.list_models, settings.local_llm_base_url)
+            if models is None:
+                raise RoutingError("local_unavailable", "Ollama не работи. Стартирай Ollama или добави облачен ключ в Resource Manager.", 503)
+            fitting = local_llm.pick_model(models, local_llm.free_ram_gb())
+            if fitting and fitting != selected.model:
+                selected = dataclasses.replace(selected, model=fitting)
         result = await create_chat_completion(selected, messages, chat_request.max_output_tokens)
     except RoutingError as exc:
         raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": exc.message}) from exc
-    except Exception:
-        raise HTTPException(502, {"code": "provider_error", "message": "LLM доставчикът не върна текст. Провери модела и логовете."})
+    except Exception as exc:
+        logger.error("Lyrics draft failed (%s: %s)", type(exc).__name__, str(exc)[:300])
+        raise HTTPException(502, {"code": "provider_error", "message": "AI моделът не върна текст. Опитай пак след малко или избери друг модел."})
     lyrics = clean_generated_lyrics(result.get("content") or "")
+    suggested_title = extract_title(result.get("content") or "")
     if not lyrics:
         raise HTTPException(502, {"code": "empty_lyrics", "message": "Моделът върна празен текст."})
-    return {"lyrics": lyrics, "provider": selected.name, "model": selected.model, "estimated_cost_usd": decision["estimated_cost_usd"], "warnings": lyric_warnings(lyrics, request.duration_seconds)}
+    return {"lyrics": lyrics, "title": suggested_title, "provider": selected.name, "model": selected.model, "estimated_cost_usd": decision["estimated_cost_usd"], "warnings": lyric_warnings(lyrics, request.duration_seconds)}
+
+@app.get("/api/v1/text-ai/status")
+async def text_ai_status():
+    """Is any text model usable (local Ollama or a cloud key)? Used by the UI before writing lyrics."""
+    await asyncio.to_thread(local_llm.auto_enable, settings)
+    return await asyncio.to_thread(local_llm.status, settings)
+
+
+@app.post("/api/v1/text-ai/local")
+async def text_ai_use_local(model: str | None = Query(default=None, max_length=80)):
+    """Switch lyrics to the local Ollama model (free) and remember it."""
+    models = await asyncio.to_thread(local_llm.list_models, settings.local_llm_base_url)
+    if models is None:
+        raise HTTPException(503, "Ollama не работи. Стартирай Ollama (или го инсталирай от ollama.com) и опитай пак.")
+    names = [m["name"] for m in models]
+    chosen = model if model in names else local_llm.pick_model(models, None)
+    if not chosen:
+        raise HTTPException(409, "В Ollama няма подходящ модел. Изтегли например: ollama pull qwen2.5:7b")
+    update_provider_preferences(settings, "ollama", {"local_llm_enabled": True, "local_llm_model": chosen})
+    return await asyncio.to_thread(local_llm.status, settings)
+
 
 @app.get("/api/v1/music/genres")
 async def music_genres():

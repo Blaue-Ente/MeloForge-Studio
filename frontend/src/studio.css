@@ -51,3 +51,32 @@
 .library-row{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:10px 0}.library-row small{color:#8ea3b8;word-break:break-all}
 .mode-switch{display:inline-flex;margin:12px 0;border:1px solid #2b4054;border-radius:10px;overflow:hidden}.mode-switch button{display:inline-flex;align-items:center;gap:6px;padding:8px 14px;background:#09131e;color:#c8d5e4;border:0;cursor:pointer}.mode-switch button.active{background:#16324a;color:#fff}.mode-switch button:disabled{opacity:.45;cursor:not-allowed}.parts-box{margin:8px 0 14px}.parts-table{width:100%;border-collapse:collapse;margin:8px 0}.parts-table td{padding:6px 4px;border-bottom:1px solid #1d2f40;vertical-align:middle}.parts-table td small{display:block;color:#8ea3b8;font-size:11px;max-width:320px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.parts-table select{width:100%}
 .link-button{background:none;border:0;color:#6fe3ff;cursor:pointer;font-size:11px;padding:4px 0 0;display:block}.lines-table{margin-left:12px;width:calc(100% - 12px)}.lines-table .line-text{white-space:normal;max-width:none;color:#c8d5e4;font-size:12px}
+.fast-mode{max-width:880px}
+.fast-steps{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 16px}
+.fast-steps button{display:inline-flex;align-items:center;gap:8px;padding:8px 14px;border-radius:999px;border:1px solid #2b4054;background:#09131e;color:#8ea3b8;font-weight:600;cursor:pointer}
+.fast-steps button span{display:inline-grid;place-items:center;width:22px;height:22px;border-radius:50%;background:#16324a;color:#c8d5e4;font-size:12px}
+.fast-steps button.active{border-color:#6fe3ff;color:#fff}.fast-steps button.active span{background:#6fe3ff;color:#04121d}
+.fast-steps button.done{color:#c8d5e4}.fast-steps button.done span{background:#1f6f5c;color:#fff}
+.fast-steps button:disabled{cursor:default;opacity:.6}
+.fast-card{padding:28px}.fast-card h2{margin:0 0 8px;font-size:24px}.fast-sub{margin-top:24px!important;font-size:18px!important}
+.fast-hint{color:#a9bccf;margin:0 0 16px;line-height:1.5}
+.fast-label{display:block;margin:18px 0 8px;color:#c8d5e4;font-weight:700;font-size:13px}.fast-label span{color:#8ea3b8;font-weight:400;margin-left:6px}
+.fast-label input{display:block;width:100%;margin-top:6px;padding:10px 12px;border:1px solid #2b4054;border-radius:10px;background:#09131e;color:#edf4fb}
+.fast-story,.fast-lyrics{width:100%;min-height:130px;padding:14px;border:1px solid #2b4054;border-radius:12px;background:#09131e;color:#edf4fb;font:inherit;line-height:1.5;resize:vertical}
+.fast-lyrics{min-height:280px;margin-top:12px;font-family:ui-monospace,Consolas,monospace;font-size:13px}
+.chip-row{display:flex;flex-wrap:wrap;gap:8px}
+.chip{padding:9px 16px;border-radius:999px;border:1px solid #2b4054;background:#09131e;color:#c8d5e4;cursor:pointer;font-weight:600}
+.chip.active{background:#16324a;border-color:#6fe3ff;color:#fff}
+.chip-select{padding:9px 12px;border-radius:999px;border:1px solid #2b4054;background:#09131e;color:#c8d5e4}
+.choice-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;margin:12px 0}
+.choice{display:flex;flex-direction:column;align-items:flex-start;gap:6px;padding:16px;border-radius:14px;border:1px solid #2b4054;background:#09131e;color:#edf4fb;cursor:pointer;text-align:left}
+.choice small{color:#8ea3b8}.choice.active{border-color:#6fe3ff;box-shadow:0 0 0 1px #6fe3ff55;background:#0f2436}.choice:disabled{opacity:.5;cursor:not-allowed}
+.fast-actions{display:flex;flex-wrap:wrap;gap:10px;margin:12px 0}
+.fast-actions a{text-decoration:none;display:inline-flex;align-items:center;gap:6px}
+.fast-nav{display:flex;justify-content:space-between;gap:12px;margin-top:28px;padding-top:18px;border-top:1px solid #1d2f40}
+.fast-callout{padding:14px 16px;margin:0 0 14px;border:1px solid #6b5a2a;border-radius:12px;background:#1d1a0f;color:#f2e6c4}.fast-callout p{margin:6px 0 10px;line-height:1.45}
+.fast-progress{height:6px;border-radius:999px;background:#16324a;overflow:hidden;margin:16px 0 10px}
+.fast-progress span{display:block;height:100%;width:35%;background:linear-gradient(90deg,#6fe3ff,#ff5fd2);animation:fastbar 1.6s ease-in-out infinite}
+@keyframes fastbar{0%{transform:translateX(-100%)}100%{transform:translateX(300%)}}
+.spin{animation:spin 1s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}
+@media (max-width:640px){.fast-card{padding:18px}.fast-nav{flex-direction:column-reverse}.fast-nav button{width:100%;justify-content:center}}

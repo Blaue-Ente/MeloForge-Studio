@@ -18,6 +18,7 @@
 - [x] Song package `meloforge.song/1` (song.json, master, sample-aligned vocal/instrumental stems) + `export-song` CLI
 - [x] Music video through Atelier (estimate → confirm → progress → MP4) from the UI and `clip` CLI; storyboard/cuts live in Atelier
 - [x] Sing in my own voice: Demucs stems + Seed-VC zero-shot singing conversion, consent-gated voice profiles, `voices`/`voice-add`/`sing` CLI
+- [x] Guided Fast mode (5 steps, 2–3 choices each) as the default view; Ollama auto-detected for lyrics; free-text song story; AI title suggestion
 - [x] Library of finished songs in `Music\MeloForge\<Title>` (MP3, WAV, lyrics, stems, info, clips) + „Отвори папката“
 - [x] ElevenLabs voices as singing targets (account voices → ~250-char sample → local Seed-VC)
 - [x] Duets: per-section voice A / B / both / original, sections found by Whisper lyric alignment
