@@ -79,7 +79,7 @@ export function FastMode({ apiOnline, onOpenStudio }: { apiOnline: boolean; onOp
       });
       setLyrics(data.lyrics);
       if (data.title && !title.trim()) setTitle(data.title);
-      setNote(`Написан от ${data.provider === "ollama" ? `локалния модел ${data.model} (безплатно)` : `${data.provider} · ${data.model}`}. Можеш да го промениш свободно.`);
+      setNote(`${data.warnings?.length ? `⚠ ${data.warnings.join(" ")} ` : ""}Написан от ${data.provider === "ollama" ? `локалния модел ${data.model} (безплатно)` : `${data.provider} · ${data.model}`}. Можеш да го промениш свободно.`);
     } catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)); }
     finally { setBusy(""); }
   }

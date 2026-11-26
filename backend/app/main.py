@@ -331,6 +331,12 @@ async def create_song_quote(request: SongRequest):
     return {**job.__dict__, "max_cost_usd": budget, "warnings": warnings, "estimate_note": f"{note} Потвърди преди изпращане."}
 
 
+def local_llm_spec(model: str):
+    from app.services.providers import provider_specs
+
+    return dataclasses.replace(provider_specs(settings)["ollama"], model=model)
+
+
 @app.post("/api/v1/music/lyrics")
 async def draft_lyrics(request: LyricsDraftRequest):
     """Draft ACE-Step-tagged lyrics with the routed LLM (local first, budget-gated cloud)."""
@@ -359,15 +365,31 @@ async def draft_lyrics(request: LyricsDraftRequest):
         message = {401: "Облачният ключ е невалиден (401). Запиши го отново в „Настройки и AI модели“.",
                    402: "Кредитите в облачния акаунт са свършили (402). Зареди OpenRouter или ползвай локалния модел.",
                    429: "Облачният модел е претоварен или лимитът е достигнат (429). Опитай след минута."}.get(code, f"AI доставчикът върна грешка {code}. Опитай пак или избери друг модел.")
-        raise HTTPException(502, {"code": f"provider_http_{code}", "message": message})
+        # A broken cloud key must not stop the person: fall back to the free local model if it runs.
+        models = await asyncio.to_thread(local_llm.list_models, settings.local_llm_base_url) if selected.kind == "cloud" else None
+        fallback_model = local_llm.pick_model(models or [], local_llm.free_ram_gb()) if models else None
+        if not fallback_model:
+            raise HTTPException(502, {"code": f"provider_http_{code}", "message": message})
+        selected = local_llm_spec(fallback_model)
+        decision = {"estimated_cost_usd": 0.0}
+        try:
+            result = await create_chat_completion(selected, messages, chat_request.max_output_tokens)
+        except Exception:
+            raise HTTPException(502, {"code": f"provider_http_{code}", "message": message})
+        fallback_warning = message + " Текстът е написан от локалния модел."
     except Exception as exc:
         logger.error("Lyrics draft failed (%s: %s)", type(exc).__name__, str(exc)[:300])
         raise HTTPException(502, {"code": "provider_error", "message": "AI моделът не върна текст. Опитай пак след малко или избери друг модел."})
+    else:
+        fallback_warning = None
     lyrics = clean_generated_lyrics(result.get("content") or "")
     suggested_title = extract_title(result.get("content") or "")
     if not lyrics:
         raise HTTPException(502, {"code": "empty_lyrics", "message": "Моделът върна празен текст."})
-    return {"lyrics": lyrics, "title": suggested_title, "provider": selected.name, "model": selected.model, "estimated_cost_usd": decision["estimated_cost_usd"], "warnings": lyric_warnings(lyrics, request.duration_seconds)}
+    warnings = lyric_warnings(lyrics, request.duration_seconds)
+    if fallback_warning:
+        warnings = [fallback_warning, *warnings]
+    return {"lyrics": lyrics, "title": suggested_title, "provider": selected.name, "model": selected.model, "estimated_cost_usd": decision["estimated_cost_usd"], "warnings": warnings, "fallback": bool(fallback_warning)}
 
 @app.get("/api/v1/text-ai/status")
 async def text_ai_status():

@@ -90,3 +90,30 @@ def test_openrouter_offers_newest_model_per_family():
     assert picked["google/gemini-3.8-flash"] == "Google Gemini" and "google/gemini-3.1-flash-image" not in picked
     assert picked["qwen/qwen4-max"] == "Китайски" and picked["mistralai/mistral-large-4-0"] == "Европейски"
     assert "z-ai/glm-5.3-flashx-legal" not in picked and "deepseek/deepseek-v4.1-flash" not in picked  # no free/zero-priced
+
+
+def test_lyrics_fall_back_to_local_when_cloud_key_is_rejected(monkeypatch):
+    import asyncio
+
+    import httpx
+
+    from app import main
+    from app.schemas import LyricsDraftRequest
+    from app.services import local_llm
+
+    for field, value in (("openrouter_api_key", "sk-or-bad"), ("openrouter_model", "anthropic/claude-haiku-5.5"),
+                         ("openrouter_input_usd_per_1m", 0.1), ("openrouter_output_usd_per_1m", 0.5)):
+        monkeypatch.setattr(main.settings, field, value)
+    monkeypatch.setattr(local_llm, "list_models", lambda *a, **k: [{"name": "qwen2.5:3b", "size_gb": 1.8}])
+    calls = []
+
+    async def fake_completion(spec, messages, max_tokens):
+        calls.append(spec.name)
+        if spec.name == "openrouter":
+            raise httpx.HTTPStatusError("401", request=httpx.Request("POST", "https://x"), response=httpx.Response(401))
+        return {"content": "Title: Тест\n[Verse 1]\nред едно\nред две"}
+
+    monkeypatch.setattr(main, "create_chat_completion", fake_completion)
+    data = asyncio.run(main.draft_lyrics(LyricsDraftRequest(prompt="pop song", language="bg", duration_seconds=60)))
+    assert calls == ["openrouter", "ollama"] and data["provider"] == "ollama" and data["fallback"] is True
+    assert "401" in data["warnings"][0] and data["title"] == "Тест"
