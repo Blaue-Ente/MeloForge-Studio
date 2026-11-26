@@ -239,12 +239,15 @@ def plan_layers(*, spans: list[dict], parts: dict[int, str], converted: dict[str
         pan = (-0.2 if key == "A" else 0.2) if together else 0.0
         layers.append({"path": str(path), "segments": spans_for_key, "gain_db": -3.0 if together else 0.0, "pan": pan})
     if choir:
-        voices = [converted[k] for k in ("A", "B") if k in converted] + [original]
-        spreads = [(0, 0, 0.0), (18, 9, -0.55), (31, -11, 0.55), (12, 14, -0.85), (25, -7, 0.85), (40, 5, 0.0)]
-        for index, (delay, cents, pan) in enumerate(spreads):
+        # Lead stays clear in the centre; doublings are only the cloned voices (the
+        # original AI singer has a different timbre and smears consonants), with
+        # small delays and pitch-only detune (rendered by Rubber Band, no timing drift).
+        voices = [converted[k] for k in ("A", "B") if k in converted]
+        spreads = [(0, 0, 0.0, 0.0), (11, 7, -0.6, -9.0), (19, -7, 0.6, -9.0), (27, 4, -0.9, -11.0)]
+        for index, (delay, cents, pan, gain) in enumerate(spreads):
             voice = voices[index % len(voices)]
             layers.append({"path": str(voice), "segments": choir, "delay_ms": delay, "cents": cents, "pan": pan,
-                           "gain_db": -1.0 if index == 0 else -7.5})
+                           "gain_db": gain})
     return layers
 
 

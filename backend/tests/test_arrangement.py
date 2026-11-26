@@ -47,8 +47,9 @@ def test_plan_layers_for_duet_and_choir(tmp_path):
     together = [layer for layer in layers if layer["gain_db"] == -3.0]
     assert {layer["path"][-5:] for layer in together} == {"a.wav", "b.wav"}
     choir = [layer for layer in layers if "delay_ms" in layer]
-    assert len(choir) == 6 and all(layer["segments"] == [(20.0, 30.0)] for layer in choir)
-    assert {layer["path"][-5:] for layer in choir} == {"a.wav", "b.wav", "o.wav"}
+    assert len(choir) == 4 and all(layer["segments"] == [(20.0, 30.0)] for layer in choir)
+    assert {layer["path"][-5:] for layer in choir} == {"a.wav", "b.wav"}  # no original AI voice in the choir
+    assert max(layer["delay_ms"] for layer in choir) <= 30
 
 
 def test_is_chorus_skips_pre_and_post_chorus():

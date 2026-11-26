@@ -362,6 +362,16 @@ def sing_arrangement(*, source_audio: Path, voices: dict[str, tuple[Path, int]],
         original = work / "voice-original.wav"
         align_stem(vocals, original, length_seconds=length)
         layers = arrangement.plan_layers(spans=spans, parts=parts, converted=converted, original=original)
+        for layer in layers:
+            # Pitch-only detune for choir doublings (timing stays sample-locked).
+            cents = layer.pop("cents", 0)
+            if cents:
+                detuned = work / f"detune-{Path(layer['path']).stem}-{cents:+d}.wav"
+                if not detuned.is_file():
+                    _run([_ffmpeg(), "-y", "-hide_banner", "-loglevel", "error", "-i", layer["path"], "-af",
+                          f"rubberband=pitch={2 ** (cents / 1200):.6f}:formant=preserved:pitchq=quality",
+                          "-c:a", "pcm_s16le", str(detuned)], timeout=600)
+                layer["path"] = str(detuned)
         key = arrangement.parse_key(keyscale)
         harmony_windows = {mode: [(s["start"], s["end"]) for s in spans if parts.get(s["index"]) == mode] for mode in ("harmony", "choir")}
         if harmony != "off" and key and (harmony_windows["harmony"] or harmony_windows["choir"]):
@@ -380,7 +390,8 @@ def sing_arrangement(*, source_audio: Path, voices: dict[str, tuple[Path, int]],
                         _run([_ffmpeg(), "-y", "-hide_banner", "-loglevel", "error", "-i", str(converted[voice]), "-af",
                               f"rubberband=pitch={2 ** (shift / 12):.6f}:formant=preserved:pitchq=quality",
                               "-c:a", "pcm_s16le", str(shifted)], timeout=600)
-                    layers.append({"path": str(shifted), "segments": chosen, "gain_db": -6.0, "pan": pan})
+                    in_choir = arrangement.intersect(chosen, harmony_windows["choir"])
+                    layers.append({"path": str(shifted), "segments": chosen, "gain_db": -9.0 if in_choir else -7.0, "pan": pan})
             timings["harmony"] = {"interval": harmony, "key": keyscale, "notes": len(notes)}
         vocal_mix = work / "vocal-mix.wav"
         arrangement.run_worker({"cmd": "mix", "length": length, "out": str(vocal_mix), "layers": layers})

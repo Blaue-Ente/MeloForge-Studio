@@ -59,6 +59,8 @@ def mix(job):
             data = np.repeat(data, 2, axis=1)
         cents = float(layer.get("cents", 0))
         if cents:
+            # Kept for compatibility only: resampling also stretches time. MeloForge
+            # renders detune with Rubber Band before mixing and never sends cents.
             # Resample by the pitch ratio (also shifts timing by <0.5 %, fine for a doubled layer).
             ratio = 2 ** (cents / 1200.0)
             idx = np.arange(0, data.shape[0] - 1, ratio)

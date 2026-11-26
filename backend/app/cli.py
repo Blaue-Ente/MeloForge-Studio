@@ -355,9 +355,9 @@ def build_parser() -> argparse.ArgumentParser:
     sing_cmd = sub.add_parser("sing", help="Re-sing a finished song in a voice profile (local Seed-VC)")
     sing_cmd.add_argument("--song", required=True)
     sing_cmd.add_argument("--voice", required=True)
-    sing_cmd.add_argument("--semitones", type=int, default=0)
+    sing_cmd.add_argument("--semitones", type=int, choices=[-12, 0, 12], default=0, help="Whole octaves only (keeps the key)")
     sing_cmd.add_argument("--voice-b", help="Second voice for a duet (verses alternate, choruses together)")
-    sing_cmd.add_argument("--semitones-b", type=int, default=0)
+    sing_cmd.add_argument("--semitones-b", type=int, choices=[-12, 0, 12], default=0)
     sing_cmd.add_argument("--choir", action="store_true", help="Choir on every chorus")
     sing_cmd.add_argument("--harmony", choices=["off", "third", "sixth", "fifth"], default="third",
                           help="Diatonic harmony used by choir/harmony parts (song key from metadata)")

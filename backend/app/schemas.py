@@ -93,10 +93,11 @@ class VoiceSongRequest(BaseModel):
 
     song_job_id: UUID
     voice_id: str = Field(pattern=r"^[0-9a-f]{32}$")
-    semitones: int = Field(default=0, ge=-12, le=12)
+    # The shift moves the sung melody, so only whole octaves keep it in the song's key.
+    semitones: int = Field(default=0, ge=-12, le=12, multiple_of=12)
     # Duet / choir: optional second voice and per-section parts {section index: mode}.
     voice_b_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{32}$")
-    semitones_b: int = Field(default=0, ge=-12, le=12)
+    semitones_b: int = Field(default=0, ge=-12, le=12, multiple_of=12)
     parts: dict[int, Literal["A", "B", "AB", "harmony", "choir", "original"]] = Field(default_factory=dict, max_length=40)
     # Per-line overrides {line index: mode}; line indices follow /song-sections "lines".
     line_parts: dict[int, Literal["A", "B", "AB", "harmony", "choir", "original"]] = Field(default_factory=dict, max_length=200)
