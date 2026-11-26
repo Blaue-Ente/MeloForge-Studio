@@ -137,6 +137,13 @@ def add_clip(song_job_id: str, video: Path, label: str) -> Path | None:
     return target
 
 
+def forget(job_id: str) -> None:
+    with _LOCK:
+        index = _index()
+        if index.pop(job_id, None) is not None:
+            _index_path().write_text(json.dumps(index, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def library_dir_for(job_id: str) -> Path | None:
     name = _index().get(job_id)
     return library_root() / name if name else None

@@ -122,6 +122,10 @@ class AtelierVideoRequest(BaseModel):
     notes: str = Field(default="", max_length=1000)
 
 
+class LyricsEdit(BaseModel):
+    lyrics: str = Field(min_length=1, max_length=10000)
+
+
 class VisualizerRequest(BaseModel):
     """Free local music video from a finished song (no AI video provider)."""
 

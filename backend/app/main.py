@@ -21,6 +21,7 @@ from app.schemas import (
     ElevenLabsImport,
     ElevenLabsKey,
     LyricsDraftRequest,
+    LyricsEdit,
     ProviderConfigUpdate,
     RuntimeSettingsUpdate,
     SongRequest,
@@ -37,6 +38,7 @@ from app.services import (
     library,
     local_llm,
     openrouter_catalog,
+    progress,
     voice_clone,
 )
 from app.services.ace_step import AceStepConfig
@@ -475,7 +477,14 @@ async def music_trends(request: TrendRequest):
 
 @app.get("/api/v1/jobs")
 async def list_jobs(kind: str | None = Query(default=None, pattern="^(song|video|composition)$"), limit: int = Query(default=20, ge=1, le=200)):
-    return {"jobs": jobs.list_recent(kind=kind, limit=limit)}
+    return {"jobs": [_with_progress(job) for job in jobs.list_recent(kind=kind, limit=limit)]}
+
+
+def _with_progress(job) -> dict:
+    """Job as JSON plus a live progress estimate (pct, stage, remaining seconds) while it runs."""
+    data = dataclasses.asdict(job)
+    data["progress"] = progress.estimate(job)
+    return data
 
 
 @app.get("/api/v1/songs/{job_id}/{kind}")
@@ -489,6 +498,60 @@ async def download_song(job_id: str, kind: str):
     path, media_type = found
     title = "".join(ch for ch in (job.payload.get("title") or "MeloForge-song") if ch.isalnum() or ch in " -_").strip() or "MeloForge-song"
     return FileResponse(path, media_type=media_type, filename=f"{title}{path.suffix}" if kind in {"mp3", "wav", "raw"} else f"{title} - {kind}{path.suffix}" if kind in {"vocals", "instrumental"} else path.name)
+
+
+@app.post("/api/v1/jobs/{job_id}/delete")
+async def delete_job(job_id: str, library_copy: bool = Query(default=False)):
+    """Delete a finished/failed song or clip with its files. Running work cannot be deleted."""
+    job = jobs.get(job_id)
+    if not job:
+        raise HTTPException(404, "Задачата не е намерена.")
+    if job.status in {"queued", "running", "mastering"}:
+        raise HTTPException(409, "Задачата още работи. Изчакай да свърши и тогава я изтрий.")
+    removed = await asyncio.to_thread(_delete_job_files, job, library_copy)
+    return {"deleted": job.id, "removed": removed}
+
+
+def _delete_job_files(job, library_copy: bool) -> list[str]:
+    import shutil as _shutil
+
+    from app.services.songs import song_dir
+
+    removed = []
+    folders = []
+    if job.kind == "song":
+        folders.append(song_dir(job.id))
+        if library_copy:
+            folder = library.library_dir_for(job.id)
+            if folder:
+                folders.append(folder)
+            library.forget(job.id)
+    elif job.kind == "composition":
+        folders.append(output_path(job.id, "16x9").parent)
+    for folder in folders:
+        if folder.is_dir():
+            _shutil.rmtree(folder, ignore_errors=True)
+            removed.append(str(folder))
+    jobs.delete(job.id)
+    return removed
+
+
+@app.post("/api/v1/songs/{job_id}/lyrics")
+async def edit_song_lyrics(job_id: str, payload: LyricsEdit):
+    """Correct the text of a finished song (subtitles, clips, publishing). The audio stays as it is."""
+    job = jobs.get(job_id)
+    if not job or job.kind != "song" or job.status != "completed":
+        raise HTTPException(409, "Избери завършена песен.")
+    from app.services.songs import song_dir
+
+    folder = song_dir(job.id)
+    text = payload.lyrics.strip()
+    (folder / "lyrics.txt").write_text(text + "\n", encoding="utf-8", newline="\n")
+    for stale in ("lyric-timing.json",):
+        (folder / stale).unlink(missing_ok=True)
+    job = jobs.update(job.id, result={**(job.result or {}), "lyrics": text, "lyrics_edited": True}) or job
+    await asyncio.to_thread(library.publish_song, job.id)
+    return _with_progress(job)
 
 
 @app.get("/api/v1/jobs/{job_id}")
@@ -508,6 +571,9 @@ async def get_job(job_id: str):
                     job = jobs.update(job.id, status="failed", error="ACE-Step приключи задачата, но не върна аудио файл.") or job
             elif provider_result["status"] == 2:
                 job = jobs.update(job.id, status="failed", error="ACE-Step не успя да генерира песента.") or job
+            else:
+                progress.record(job.id, provider_result.get("progress", 0.0) * 0.95, provider_result.get("stage") or "")
+                job = jobs.get(job.id) or job
         except Exception:
             # Provider polling is read-only; transient failures leave the job recoverable.
             pass
@@ -530,7 +596,7 @@ async def get_job(job_id: str):
         except Exception:
             # A transient status poll failure does not change the provider job state.
             pass
-    return job
+    return _with_progress(job)
 
 @app.post("/api/v1/jobs/{job_id}/confirm")
 async def confirm_job(job_id: str):
@@ -546,7 +612,7 @@ async def confirm_job(job_id: str):
             if urlparse(settings.ace_step_base_url).hostname in {"127.0.0.1", "localhost", "::1"}:
                 await asyncio.to_thread(local_llm.unload_all, settings.local_llm_base_url)
             provider_result = await ace_step_submit_song(_ace_step_config(), provider_payload)
-            updated_payload = {**request_data, "model": model}
+            updated_payload = {**request_data, "model": model, "started_at": progress.now_iso()}
             return jobs.update(job.id, status="running", provider_task_id=provider_result["task_id"], payload=updated_payload)
         if job.kind != "video":
             jobs.update(job.id, status="failed", error="Този тип генерация няма свързан engine.")
@@ -605,6 +671,19 @@ def build_ace_step_payload(request_data: dict, model: str, *, lm_enabled: bool) 
 _finalizing: set[str] = set()
 
 
+def _add_timing(job_id: str, result: dict) -> None:
+    """Remember how long the job worked, so later estimates learn this machine's pace."""
+    job = jobs.get(job_id)
+    if not job:
+        return
+    worked = progress.finish_timing(job)
+    if worked:
+        result["work_seconds"] = round(worked, 1)
+    mastering = (result.get("mastering") or {}).get("after") or {}
+    result.setdefault("duration_seconds", mastering.get("duration_seconds") or job.payload.get("duration_seconds"))
+    result.pop("progress_info", None)
+
+
 def _publish_to_library(job_id: str) -> None:
     """Copy a finished song to the readable library folder; never fails the job."""
     try:
@@ -619,6 +698,7 @@ def _publish_to_library(job_id: str) -> None:
 async def _finalize_song_job(job_id: str) -> None:
     try:
         result = await asyncio.to_thread(finalize_song, job_id, ace_step_base_url=settings.ace_step_base_url, ace_step_api_key=settings.ace_step_api_key)
+        _add_timing(job_id, result)
         jobs.update(job_id, status="completed", result=result)
         await asyncio.to_thread(_publish_to_library, job_id)
     except Exception as exc:
@@ -686,6 +766,7 @@ def _run_visualizer(job_id: str, song_job_id: str) -> None:
         title = options.get("title") if options.get("title") is not None else song.payload.get("title", "")
         subtitle = options.get("subtitle") if options.get("subtitle") is not None else " · ".join(
             part for part in [song.payload.get("genre", ""), "MeloForge"] if part)
+        progress.record(job_id, 0.0, "render")
         result = render_visualizer(
             audio=mastered[0], output_dir=output_path(job_id, "16x9").parent, ffmpeg=ffmpeg, title=title or "",
             subtitle=subtitle or "", lyrics=lyrics, style=options.get("style", "spectrum"),
@@ -694,6 +775,7 @@ def _run_visualizer(job_id: str, song_job_id: str) -> None:
         if lyrics.strip():
             lyrics_path(job_id).write_text(lyrics.strip() + "\n", encoding="utf-8", newline="\n")
         result.update(song_job_id=song_job_id, lyrics_available=bool(lyrics.strip()))
+        _add_timing(job_id, result)
         jobs.update(job_id, status="completed", result=result)
         for aspect in result.get("formats", []):
             try:
@@ -814,7 +896,9 @@ _voice_running: set[str] = set()
 def _run_voice_song(job_id: str, source_job_id: str, voice: dict, voice_b: dict | None = None) -> None:
     _voice_running.add(job_id)
     try:
-        result = finalize_voice_song(job_id, source_job_id, voice, voice_b)
+        result = finalize_voice_song(job_id, source_job_id, voice, voice_b,
+                                     on_progress=lambda fraction, stage: progress.record(job_id, fraction, stage))
+        _add_timing(job_id, result)
         jobs.update(job_id, status="completed", result=result)
         _publish_to_library(job_id)
     except Exception as exc:
@@ -846,7 +930,7 @@ async def create_voice_song(request: VoiceSongRequest, background_tasks: Backgro
         raise HTTPException(503, "FFmpeg не е инсталиран.")
     base = source.payload
     payload = {
-        "mode": "voice_swap", "source_song_id": source.id, "voice_id": voice["id"],
+        "mode": "voice_swap", "source_song_id": source.id, "voice_id": voice["id"], "started_at": progress.now_iso(),
         "title": f"{base.get('title') or 'Песен'} ({voice.get('name')}{' & ' + voice_b.get('name') if voice_b else ''})"[:120], "prompt": base.get("prompt", ""),
         "genre": base.get("genre", ""), "duration_seconds": base.get("duration_seconds"), "lyrics": base.get("lyrics", ""),
         **request.model_dump(exclude={"song_job_id", "voice_id", "parts", "line_parts"}),
@@ -1005,7 +1089,8 @@ async def create_visualizer(request: VisualizerRequest, background_tasks: Backgr
         raise HTTPException(409, "Песента няма мастериран запис. Генерирай я отново с тази версия на MeloForge.")
     if not shutil.which("ffmpeg"):
         raise HTTPException(503, "FFmpeg не е инсталиран.")
-    payload = {"mode": "visualizer", "song_job_id": song.id, **request.model_dump(exclude={"song_job_id"})}
+    payload = {"mode": "visualizer", "song_job_id": song.id, "started_at": progress.now_iso(),
+               "duration_seconds": song.payload.get("duration_seconds"), **request.model_dump(exclude={"song_job_id"})}
     composition = jobs.create("composition", payload, 0)
     jobs.update(composition.id, status="queued")
     background_tasks.add_task(_run_visualizer, composition.id, song.id)

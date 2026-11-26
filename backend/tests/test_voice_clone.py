@@ -88,7 +88,7 @@ def test_voice_swap_endpoint_builds_a_mastered_song(monkeypatch, tmp_path):
     tasks = BackgroundTasks()
     job = asyncio.run(main.create_voice_song(VoiceSongRequest(song_job_id=UUID(song.id), voice_id=voice["id"]), tasks))
     assert job.kind == "song" and job.status == "running" and job.payload["mode"] == "voice_swap"
-    assert asyncio.run(main.get_job(job.id)).status == "running"  # not mistaken for an interrupted job
+    assert asyncio.run(main.get_job(job.id))["status"] == "running"  # not mistaken for an interrupted job
     task = tasks.tasks[0]
     task.func(*task.args, **task.kwargs)
     done = jobs.get(job.id)

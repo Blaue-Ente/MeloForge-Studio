@@ -80,3 +80,11 @@
 @keyframes fastbar{0%{transform:translateX(-100%)}100%{transform:translateX(300%)}}
 .spin{animation:spin 1s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}
 @media (max-width:640px){.fast-card{padding:18px}.fast-nav{flex-direction:column-reverse}.fast-nav button{width:100%;justify-content:center}}
+.job-progress{margin:12px 0}.job-progress-bar{height:10px;border-radius:999px;background:#16324a;overflow:hidden}
+.job-progress-bar span{display:block;height:100%;border-radius:999px;background:linear-gradient(90deg,#6fe3ff,#ff5fd2);transition:width .8s ease}
+.job-progress-text{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 12px;margin-top:8px;color:#c8d5e4;font-size:13px}
+.job-progress-text b{color:#edf4fb}.job-progress-text em{font-style:normal;color:#8ea3b8}
+.history-row{display:flex;align-items:center;gap:6px}.history-row>button:first-child{flex:1;min-width:0}
+.danger-row{display:flex;justify-content:flex-end;margin-top:12px}
+.secondary-button.danger{color:#ff9b9b;border-color:#5a2a2a}.secondary-button.danger:hover{background:#2a1212}
+.lyrics-edit textarea{width:100%;min-height:260px}

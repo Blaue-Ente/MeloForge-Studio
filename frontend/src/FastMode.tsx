@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
+import { JobProgress, type Progress } from "./JobProgress";
 import { ArrowLeft, ArrowRight, Check, Clapperboard, Download, FolderOpen, Mic, Music2, RefreshCw, Sparkles, Wand2 } from "lucide-react";
 
 type Genre = { id: string; label: string; caption: string; bpm: [number, number]; mood: string };
 type Voice = { id: string; name: string };
 type TextAi = { ready: boolean; local: { running: boolean; enabled: boolean; model: string; models: string[]; suggested: string | null }; cloud_configured: boolean };
-type Job = { id: string; kind: string; status: string; quote_usd: number; error?: string | null; payload: { title?: string; duration_seconds?: number }; result?: { files?: Record<string, string>; library_dir?: string; formats?: string[] } | null };
+type Job = { id: string; kind: string; status: string; quote_usd: number; progress?: Progress; error?: string | null; payload: { title?: string; duration_seconds?: number }; result?: { files?: Record<string, string>; library_dir?: string; formats?: string[] } | null };
 
 const QUICK_GENRES = ["pop", "balkan", "folk", "rock", "hiphop", "dance"];
 const LENGTHS = [{ id: 60, label: "Кратка", hint: "~1 мин." }, { id: 150, label: "Песен", hint: "~2:30 мин." }, { id: 210, label: "Дълга", hint: "~3:30 мин." }];
@@ -178,7 +179,7 @@ export function FastMode({ apiOnline, onOpenStudio }: { apiOnline: boolean; onOp
       {step === 3 && <>
         <h2>{songDone ? "Песента е готова" : failed ? "Нещо се обърка" : "Създавам песента…"}</h2>
         {song?.status === "awaiting_confirmation" && song.quote_usd > 0 && <div className="fast-callout"><b>Тази генерация струва ${song.quote_usd.toFixed(2)}.</b><button className="primary-button" disabled={busy === "song"} onClick={() => void confirmPaid()}>Потвърди и създай</button></div>}
-        {working && <><div className="fast-progress"><span /></div><p className="fast-hint">{song?.status === "mastering" ? "Мастериране по стандарта за стрийминг…" : voiceJob ? "Пея песента с избрания глас… (5–15 мин.)" : "ACE-Step композира и пее… (обикновено 2–6 мин.)"} Можеш да оставиш прозореца отворен.</p></>}
+        {working && <><JobProgress progress={(voiceJob || song)?.progress} fallback={voiceJob ? "Пея песента с избрания глас…" : "ACE-Step композира и пее…"} /><p className="fast-hint">{voiceJob ? "Пея песента с избрания глас." : "ACE-Step композира и пее."} Можеш да оставиш прозореца отворен.</p></>}
         {failed && <p className="inline-notice error-text">{failed.error || "Генерацията не успя."}</p>}
         {songDone && finalJob?.result?.files?.mp3 && <>
           <audio className="generated-audio" controls src={finalJob.result.files.mp3} />
@@ -194,7 +195,7 @@ export function FastMode({ apiOnline, onOpenStudio }: { apiOnline: boolean; onOp
           <button className="choice" onClick={onOpenStudio}><Clapperboard size={20} /><b>Клип с картини</b><small>през Atelier · в Music Studio</small></button>
           <button className="choice" onClick={() => { setStep(0); setStory(""); setLyrics(""); setTitle(""); setSong(null); setVoiceJob(null); setClip(null); }}><Check size={20} /><b>Готово, нова песен</b><small>започни отначало</small></button>
         </div>
-        {clip && ["queued", "running"].includes(clip.status) && <><div className="fast-progress"><span /></div><p className="fast-hint">Рендерирам клипа 16:9 и 9:16…</p></>}
+        {clip && ["queued", "running"].includes(clip.status) && <JobProgress progress={clip.progress} fallback="Рендерирам клипа 16:9 и 9:16…" />}
         {clip?.status === "failed" && <p className="inline-notice error-text">{clip.error}</p>}
         {clip?.status === "completed" && <><video className="generated-video" controls src={`/api/v1/media/${clip.id}/16x9`} /><div className="fast-actions"><a className="secondary-button" href={`/api/v1/media/${clip.id}/16x9`} download><Download size={15} />16:9 (YouTube)</a><a className="secondary-button" href={`/api/v1/media/${clip.id}/9x16`} download><Download size={15} />9:16 (Shorts/TikTok)</a><button className="secondary-button" onClick={openFolder}><FolderOpen size={15} />Отвори папката</button></div></>}
       </>}

@@ -84,6 +84,18 @@ def update(
         return save(job)
 
 
+def delete(job_id: str) -> bool:
+    with _LOCK:
+        try:
+            path = _path(str(UUID(job_id)))
+        except ValueError:
+            return False
+        if path.is_file():
+            path.unlink()
+            return True
+        return False
+
+
 def confirm(job_id: str) -> Job | None:
     with _LOCK:
         job = get(job_id)

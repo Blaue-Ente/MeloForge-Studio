@@ -309,7 +309,8 @@ def sing_in_voice(*, source_audio: Path, reference: Path, output_dir: Path, semi
 def sing_arrangement(*, source_audio: Path, voices: dict[str, tuple[Path, int]], output_dir: Path,
                      parts: dict[int, str] | None = None, lyrics: str = "", language: str = "bg",
                      quality: str = "balanced", vocal_gain_db: float = 0.0,
-                     line_parts: dict[int, str] | None = None, harmony: str = "off", keyscale: str = "") -> dict:
+                     line_parts: dict[int, str] | None = None, harmony: str = "off", keyscale: str = "",
+                     on_progress=None) -> dict:
     """Re-sing a song with one or two cloned voices; sections may be solo, together, original or choir.
 
     ``voices`` maps "A"/"B" to (reference wav, semitone shift). ``parts`` maps lyric
@@ -324,6 +325,15 @@ def sing_arrangement(*, source_audio: Path, voices: dict[str, tuple[Path, int]],
     work = output_dir / ".voice-work"
     work.mkdir(parents=True, exist_ok=True)
     timings: dict = {}
+
+    def report(fraction: float, stage: str) -> None:
+        if on_progress:
+            try:
+                on_progress(fraction, stage)
+            except Exception:
+                pass
+
+    report(0.02, "separation")
     started = time.time()
     vocals, instrumental = separate(source_audio, work / "stems")
     timings["separation_seconds"] = round(time.time() - started, 1)
@@ -336,7 +346,8 @@ def sing_arrangement(*, source_audio: Path, voices: dict[str, tuple[Path, int]],
     started = time.time()
     converted: dict[str, Path] = {}
     gains: dict[str, float] = {}
-    for key in sorted(needed):
+    for done, key in enumerate(sorted(needed)):
+        report(0.10 + 0.60 * done / len(needed), "conversion")
         reference, semitones = voices[key]
         raw = convert_vocals(vocals, reference, work, semitones=semitones, quality=quality, name=f"converted-{key}")
         try:
@@ -353,6 +364,7 @@ def sing_arrangement(*, source_audio: Path, voices: dict[str, tuple[Path, int]],
         vocal_mix = converted["A"]
     else:
         started = time.time()
+        report(0.72, "arrangement")
         words = arrangement.transcribe_words(vocals, language=language, cache=work / "words.json")
         timed = arrangement.align_lyrics(lyrics, words, length)
         spans = arrangement.section_spans(lyrics, timed, length)
@@ -401,6 +413,7 @@ def sing_arrangement(*, source_audio: Path, voices: dict[str, tuple[Path, int]],
         timings["lyric_lines_heard"] = sum(1 for line in timed if line["heard"])
         timings["lyric_lines"] = len(timed)
         (output_dir / "lyric-timing.json").write_text(json.dumps(arrangement.lyric_timing(timed), ensure_ascii=False, indent=2), encoding="utf-8")
+    report(0.92, "mixing")
     mixed = output_dir / "raw.wav"
     _run([
         _ffmpeg(), "-y", "-hide_banner", "-loglevel", "error", "-i", str(instrumental), "-i", str(vocal_mix),

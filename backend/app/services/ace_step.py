@@ -81,4 +81,6 @@ async def song_status(config: AceStepConfig, task_id: str) -> dict:
         "lyrics": first.get("lyrics") or "",
         "metadata": first.get("metas") or {},
         "provider_result": first,
+        "progress": float(first.get("progress") or 0.0),
+        "stage": first.get("stage") or "",
     }

@@ -95,7 +95,8 @@ def finalize_song(job_id: str, *, ace_step_base_url: str, ace_step_api_key: str)
     }
 
 
-def finalize_voice_song(job_id: str, source_job_id: str, voice: dict, voice_b: dict | None = None) -> dict:
+def finalize_voice_song(job_id: str, source_job_id: str, voice: dict, voice_b: dict | None = None,
+                        on_progress=None) -> dict:
     """Re-sing ``source_job_id`` in ``voice`` (and ``voice_b`` for duets) and master it as song ``job_id``."""
     from app.services.voice_clone import sing_arrangement, voice_dir
 
@@ -120,7 +121,7 @@ def finalize_voice_song(job_id: str, source_job_id: str, voice: dict, voice_b: d
     stats = sing_arrangement(
         source_audio=audio, voices=voices, output_dir=folder, parts=parts, lyrics=lyrics,
         language=source.payload.get("language") or "bg", quality=payload.get("quality", "balanced"),
-        vocal_gain_db=float(payload.get("vocal_gain_db", 0.0)), line_parts=line_parts,
+        vocal_gain_db=float(payload.get("vocal_gain_db", 0.0)), line_parts=line_parts, on_progress=on_progress,
         harmony=payload.get("harmony", "third"), keyscale=keyscale,
     )
     if lyrics and lyrics != "[Instrumental]":
