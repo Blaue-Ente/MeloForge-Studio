@@ -38,9 +38,11 @@ def _song(tmp_path, *, stems=False):
 def test_package_manifest_follows_contract(monkeypatch, tmp_path):
     monkeypatch.setattr(jobs, "ROOT", tmp_path)
     song = _song(tmp_path, stems=True)
+    (tmp_path / "songs" / song.id / "lyric-timing.json").write_text('[{"start": 1.0, "end": 2.0, "text": "ред", "heard": true}]', encoding="utf-8")
     out = song_package.export_package(song.id)
     manifest = json.loads((tmp_path / "songs" / song.id / "package" / "song.json").read_text(encoding="utf-8"))
     assert manifest == out["manifest"]
+    assert manifest["lyric_timing"] == [{"start": 1.0, "end": 2.0, "text": "ред", "heard": True}]
     assert manifest["schema"] == "meloforge.song/1" and manifest["bpm"] == 96 and manifest["keyscale"] == "D minor"
     assert manifest["prompt"] == "tavern folk" and abs(manifest["duration"] - 6.0) < 0.1
     assert manifest["files"] == {"master": "master.wav", "mp3": "master.mp3", "vocals": "vocals.wav", "instrumental": "instrumental.wav", "lyrics": "lyrics.txt"}
@@ -79,6 +81,7 @@ def test_atelier_url_must_be_loopback():
 def test_atelier_request_sends_package_path(monkeypatch, tmp_path):
     monkeypatch.setattr(jobs, "ROOT", tmp_path)
     song = _song(tmp_path, stems=True)
+    monkeypatch.setattr(song_package, "ensure_lyric_timing", lambda job_id: False)
     seen = {}
 
     def handler(request: httpx.Request):
@@ -112,3 +115,29 @@ def test_busy_atelier_is_still_online(monkeypatch):
     real = httpx.AsyncClient
     monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
     assert asyncio.run(atelier.health("http://127.0.0.1:8765"))["online"] is True
+
+
+@needs_ffmpeg
+def test_elevenlabs_import_creates_tagged_profile(monkeypatch, tmp_path):
+    from app.schemas import ElevenLabsImport
+    from app.services import elevenlabs
+
+    monkeypatch.setattr(jobs, "ROOT", tmp_path)
+    monkeypatch.setattr(elevenlabs, "api_key", lambda: "sk_test_key_123")
+    sample = tmp_path / "s.mp3"
+    _tone(sample, 12)
+    seen = {}
+
+    def handler(request: httpx.Request):
+        seen["path"], seen["key"] = request.url.path, request.headers["xi-api-key"]
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, content=sample.read_bytes(), headers={"Content-Type": "audio/mpeg"})
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+    with pytest.raises(HTTPException):
+        asyncio.run(main.elevenlabs_import(ElevenLabsImport(voice_id="abc123", consent=False)))
+    profile = asyncio.run(main.elevenlabs_import(ElevenLabsImport(voice_id="abc123", name="Рейчъл", consent=True)))
+    assert seen["path"] == "/v1/text-to-speech/abc123" and seen["key"] == "sk_test_key_123"
+    assert seen["body"]["model_id"] == "eleven_multilingual_v2" and len(seen["body"]["text"]) < 300
+    assert profile["source"] == "elevenlabs" and profile["name"] == "Рейчъл" and profile["reference_seconds"] >= 5

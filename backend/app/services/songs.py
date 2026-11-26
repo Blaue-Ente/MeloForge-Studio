@@ -95,9 +95,9 @@ def finalize_song(job_id: str, *, ace_step_base_url: str, ace_step_api_key: str)
     }
 
 
-def finalize_voice_song(job_id: str, source_job_id: str, voice: dict) -> dict:
-    """Re-sing ``source_job_id`` in ``voice`` and master it as song ``job_id``."""
-    from app.services.voice_clone import sing_in_voice, voice_dir
+def finalize_voice_song(job_id: str, source_job_id: str, voice: dict, voice_b: dict | None = None) -> dict:
+    """Re-sing ``source_job_id`` in ``voice`` (and ``voice_b`` for duets) and master it as song ``job_id``."""
+    from app.services.voice_clone import sing_arrangement, voice_dir
 
     source = jobs.get(source_job_id)
     if not source:
@@ -109,12 +109,16 @@ def finalize_voice_song(job_id: str, source_job_id: str, voice: dict) -> dict:
     payload = job.payload if job else {}
     folder = song_dir(job_id)
     folder.mkdir(parents=True, exist_ok=True)
-    stats = sing_in_voice(
-        source_audio=audio, reference=voice_dir(voice["id"]) / "reference.wav", output_dir=folder,
-        semitones=int(payload.get("semitones", 0)), quality=payload.get("quality", "balanced"),
+    lyrics = ((source.result or {}).get("lyrics") or source.payload.get("lyrics") or "").strip()
+    voices = {"A": (voice_dir(voice["id"]) / "reference.wav", int(payload.get("semitones", 0)))}
+    if voice_b:
+        voices["B"] = (voice_dir(voice_b["id"]) / "reference.wav", int(payload.get("semitones_b", 0)))
+    parts = {int(index): mode for index, mode in (payload.get("parts") or {}).items()}
+    stats = sing_arrangement(
+        source_audio=audio, voices=voices, output_dir=folder, parts=parts, lyrics=lyrics,
+        language=source.payload.get("language") or "bg", quality=payload.get("quality", "balanced"),
         vocal_gain_db=float(payload.get("vocal_gain_db", 0.0)),
     )
-    lyrics = ((source.result or {}).get("lyrics") or source.payload.get("lyrics") or "").strip()
     if lyrics and lyrics != "[Instrumental]":
         (folder / "lyrics.txt").write_text(lyrics + "\n", encoding="utf-8", newline="\n")
     else:
@@ -130,4 +134,6 @@ def finalize_voice_song(job_id: str, source_job_id: str, voice: dict) -> dict:
         if found and found[0].is_file():
             files[kind] = f"/api/v1/songs/{job_id}/{kind}"
     return {"lyrics": lyrics, "files": files, "local_dir": str(folder), "mastering": report,
-            "voice": {"id": voice["id"], "name": voice.get("name")}, "source_song_id": source_job_id, "timings": stats}
+            "voice": {"id": voice["id"], "name": voice.get("name") + (f" & {voice_b.get('name')}" if voice_b else "")},
+            "voice_b": {"id": voice_b["id"], "name": voice_b.get("name")} if voice_b else None,
+            "sections": stats.pop("sections", None), "source_song_id": source_job_id, "timings": stats}

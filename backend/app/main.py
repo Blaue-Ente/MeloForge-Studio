@@ -16,6 +16,8 @@ from app.schemas import (
     AtelierVideoRequest,
     ChatRequest,
     ComposeRequest,
+    ElevenLabsImport,
+    ElevenLabsKey,
     LyricsDraftRequest,
     ProviderConfigUpdate,
     RuntimeSettingsUpdate,
@@ -26,7 +28,7 @@ from app.schemas import (
     VisualizerRequest,
     VoiceSongRequest,
 )
-from app.services import atelier, jobs, library, voice_clone
+from app.services import atelier, elevenlabs, jobs, library, voice_clone
 from app.services.ace_step import AceStepConfig
 from app.services.ace_step import list_models as ace_step_models
 from app.services.ace_step import song_status as ace_step_song_status
@@ -615,6 +617,60 @@ async def create_voice_profile(request: Request, name: str = Query(default="Мо
         raise HTTPException(code, message) from exc
 
 
+@app.get("/api/v1/song-sections/{job_id}")
+async def song_sections(job_id: str):
+    """Lyric sections of a song, for choosing who sings what (duet / choir)."""
+    from app.services import arrangement
+
+    job = jobs.get(job_id)
+    if not job or job.kind != "song":
+        raise HTTPException(404, "Песента не е намерена.")
+    lyrics = ((job.result or {}).get("lyrics") or job.payload.get("lyrics") or "").strip()
+    sections, lines = arrangement.parse_lyrics("" if lyrics == "[Instrumental]" else lyrics)
+    counts = {s["index"]: sum(1 for line in lines if line["section"] == s["index"]) for s in sections}
+    return {"sections": [{"index": s["index"], "label": s["label"], "lines": counts[s["index"]],
+                          "first_line": next((line["text"] for line in lines if line["section"] == s["index"]), "")} for s in sections],
+            "duet_default": {str(k): v for k, v in arrangement.default_parts([{**s, "lines": counts[s["index"]]} for s in sections], duet=True).items()}}
+
+
+@app.get("/api/v1/elevenlabs/status")
+async def elevenlabs_status():
+    return {"configured": bool(elevenlabs.api_key()), "sample_characters": len(elevenlabs.sample_text("bg"))}
+
+
+@app.post("/api/v1/elevenlabs/key")
+async def elevenlabs_save_key(payload: ElevenLabsKey):
+    """Validate the key with a read-only voice list, then keep it in the OS secret store."""
+    try:
+        voices = await elevenlabs.list_voices(payload.key.strip())
+    except elevenlabs.ElevenLabsError as exc:
+        raise HTTPException(exc.status, str(exc)) from exc
+    elevenlabs.save_key(payload.key)
+    return {"configured": True, "voices": len(voices)}
+
+
+@app.get("/api/v1/elevenlabs/voices")
+async def elevenlabs_voices():
+    try:
+        return {"voices": await elevenlabs.list_voices()}
+    except elevenlabs.ElevenLabsError as exc:
+        raise HTTPException(exc.status, str(exc)) from exc
+
+
+@app.post("/api/v1/elevenlabs/import")
+async def elevenlabs_import(payload: ElevenLabsImport):
+    """Paid (ElevenLabs credits): renders a ~250-character sample and saves it as a voice profile."""
+    if not payload.consent:
+        raise HTTPException(400, "Потвърди, че използваш глас от своя ElevenLabs акаунт според условията му.")
+    try:
+        return await elevenlabs.import_voice(payload.voice_id, payload.name or "ElevenLabs глас", language=payload.language)
+    except elevenlabs.ElevenLabsError as exc:
+        raise HTTPException(exc.status, str(exc)) from exc
+    except voice_clone.VoiceCloneError as exc:
+        code, message = _VOICE_ERRORS.get(str(exc), (400, "Гласовият профил не беше създаден."))
+        raise HTTPException(code, message) from exc
+
+
 @app.get("/api/v1/voices/{voice_id}/sample")
 async def voice_sample(voice_id: str):
     if not voice_clone.get_voice(voice_id):
@@ -636,10 +692,10 @@ async def delete_voice_profile(voice_id: str):
 _voice_running: set[str] = set()
 
 
-def _run_voice_song(job_id: str, source_job_id: str, voice: dict) -> None:
+def _run_voice_song(job_id: str, source_job_id: str, voice: dict, voice_b: dict | None = None) -> None:
     _voice_running.add(job_id)
     try:
-        result = finalize_voice_song(job_id, source_job_id, voice)
+        result = finalize_voice_song(job_id, source_job_id, voice, voice_b)
         jobs.update(job_id, status="completed", result=result)
         _publish_to_library(job_id)
     except Exception as exc:
@@ -662,20 +718,26 @@ async def create_voice_song(request: VoiceSongRequest, background_tasks: Backgro
     voice = voice_clone.get_voice(request.voice_id)
     if not voice:
         raise HTTPException(404, "Гласът не е намерен.")
+    voice_b = voice_clone.get_voice(request.voice_b_id) if request.voice_b_id else None
+    if request.voice_b_id and not voice_b:
+        raise HTTPException(404, "Вторият глас не е намерен.")
+    if any(mode in {"B", "AB"} for mode in request.parts.values()) and not voice_b:
+        raise HTTPException(400, "За дует избери и втори глас.")
     if not shutil.which("ffmpeg"):
         raise HTTPException(503, "FFmpeg не е инсталиран.")
     base = source.payload
     payload = {
         "mode": "voice_swap", "source_song_id": source.id, "voice_id": voice["id"],
-        "title": f"{base.get('title') or 'Песен'} ({voice.get('name')})"[:120], "prompt": base.get("prompt", ""),
+        "title": f"{base.get('title') or 'Песен'} ({voice.get('name')}{' & ' + voice_b.get('name') if voice_b else ''})"[:120], "prompt": base.get("prompt", ""),
         "genre": base.get("genre", ""), "duration_seconds": base.get("duration_seconds"), "lyrics": base.get("lyrics", ""),
-        **request.model_dump(exclude={"song_job_id", "voice_id"}),
+        **request.model_dump(exclude={"song_job_id", "voice_id", "parts"}),
+        "parts": {str(index): mode for index, mode in request.parts.items()},
     }
     job = jobs.create("song", payload, 0)
     # No provider_task_id: the status poller leaves this job to the background worker.
     jobs.update(job.id, status="running")
     _voice_running.add(job.id)
-    background_tasks.add_task(_run_voice_song, job.id, source.id, voice)
+    background_tasks.add_task(_run_voice_song, job.id, source.id, voice, voice_b)
     return jobs.get(job.id)
 
 

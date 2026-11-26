@@ -80,7 +80,29 @@ def build_manifest(job_id: str) -> dict:
     }
     if voice:
         manifest["voice"] = {"name": voice.get("name")}
+    timing = folder / "lyric-timing.json"
+    if timing.is_file():
+        manifest["lyric_timing"] = json.loads(timing.read_text(encoding="utf-8"))
     return manifest
+
+
+def ensure_lyric_timing(job_id: str) -> bool:
+    """Whisper on the vocal stem + alignment to the known lyrics (cached as lyric-timing.json)."""
+    from app.services import arrangement
+
+    folder = song_dir(job_id)
+    target = folder / "lyric-timing.json"
+    if target.is_file():
+        return True
+    job = jobs.get(job_id)
+    lyrics = ((job.result or {}).get("lyrics") or job.payload.get("lyrics") or "").strip() if job else ""
+    if not lyrics or lyrics == "[Instrumental]" or not (folder / "vocals.wav").is_file():
+        return False
+    words = arrangement.transcribe_words(folder / "vocals.wav", language=job.payload.get("language") or "bg",
+                                         cache=folder / "whisper-words.json")
+    timed = arrangement.align_lyrics(lyrics, words, probe_duration(folder / "master.wav"))
+    target.write_text(json.dumps(arrangement.lyric_timing(timed), ensure_ascii=False, indent=2), encoding="utf-8")
+    return True
 
 
 def export_package(job_id: str, destination: Path | None = None, *, stems: bool = True) -> dict:
@@ -92,8 +114,9 @@ def export_package(job_id: str, destination: Path | None = None, *, stems: bool 
     if stems and not job.payload.get("instrumental"):
         try:
             ensure_stems(job_id)
-        except Exception as exc:  # Stems are optional in the contract; Atelier can separate itself.
-            stems_note = f"stems unavailable: {type(exc).__name__}"
+            ensure_lyric_timing(job_id)
+        except Exception as exc:  # Stems and timing are optional in the contract; Atelier can do both itself.
+            stems_note = f"stems/timing unavailable: {type(exc).__name__}"
     manifest = build_manifest(job_id)
     source = song_dir(job_id)
     target = Path(destination) if destination else source / "package"

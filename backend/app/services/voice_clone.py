@@ -189,6 +189,15 @@ def create_voice(*, name: str, data: bytes, filename: str, consent: bool) -> dic
     return meta
 
 
+def tag_voice(voice_id: str, **extra) -> dict:
+    """Add provenance fields (e.g. source=elevenlabs) to a voice profile."""
+    meta_path = voice_dir(voice_id) / "voice.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta.update(extra)
+    meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    return meta
+
+
 def delete_voice(voice_id: str) -> bool:
     folder = voice_dir(voice_id)
     if not folder.is_dir():
@@ -216,8 +225,9 @@ def separate(audio: Path, workdir: Path) -> tuple[Path, Path]:
     return vocals, instrumental
 
 
-def convert_vocals(vocals: Path, reference: Path, workdir: Path, *, semitones: int = 0, quality: str = "balanced") -> Path:
-    out = workdir / "converted"
+def convert_vocals(vocals: Path, reference: Path, workdir: Path, *, semitones: int = 0, quality: str = "balanced",
+                   name: str = "converted") -> Path:
+    out = workdir / name
     if out.exists():
         shutil.rmtree(out)
     _run([
@@ -277,22 +287,78 @@ def export_stems(audio: Path, output_dir: Path) -> dict:
 
 def sing_in_voice(*, source_audio: Path, reference: Path, output_dir: Path, semitones: int = 0,
                   quality: str = "balanced", vocal_gain_db: float = 0.0) -> dict:
-    """Full pipeline; returns paths and timings. Runs in a worker thread."""
+    """Single voice over the whole song (kept for callers and the CLI)."""
+    return sing_arrangement(source_audio=source_audio, voices={"A": (reference, semitones)}, output_dir=output_dir,
+                            quality=quality, vocal_gain_db=vocal_gain_db)
+
+
+def sing_arrangement(*, source_audio: Path, voices: dict[str, tuple[Path, int]], output_dir: Path,
+                     parts: dict[int, str] | None = None, lyrics: str = "", language: str = "bg",
+                     quality: str = "balanced", vocal_gain_db: float = 0.0) -> dict:
+    """Re-sing a song with one or two cloned voices; sections may be solo, together, original or choir.
+
+    ``voices`` maps "A"/"B" to (reference wav, semitone shift). ``parts`` maps lyric
+    section index to a mode from ``arrangement.PART_MODES``. Without parts (or with
+    A everywhere) this is the plain single-voice swap.
+    """
+    from app.services import arrangement
+
     status = engine_status()
     if not status["installed"]:
         raise VoiceCloneError("Seed-VC is not installed")
     work = output_dir / ".voice-work"
     work.mkdir(parents=True, exist_ok=True)
-    timings = {}
+    timings: dict = {}
     started = time.time()
     vocals, instrumental = separate(source_audio, work / "stems")
     timings["separation_seconds"] = round(time.time() - started, 1)
+    length = probe_duration(instrumental)
+    parts = parts or {}
+    needed = {"A"} | {voice for mode in parts.values() for voice in (("A", "B") if mode in {"AB", "choir"} else (mode,))}
+    needed = {voice for voice in needed if voice in voices}
     started = time.time()
-    converted = convert_vocals(vocals, reference, work, semitones=semitones, quality=quality)
+    converted: dict[str, Path] = {}
+    gains: dict[str, float] = {}
+    for key in sorted(needed):
+        reference, semitones = voices[key]
+        raw = convert_vocals(vocals, reference, work, semitones=semitones, quality=quality, name=f"converted-{key}")
+        try:
+            gain = measure(vocals).integrated_lufs - measure(raw).integrated_lufs
+        except Exception:
+            gain = 0.0
+        gains[key] = round(max(-12.0, min(12.0, gain)), 2)
+        converted[key] = work / f"voice-{key}.wav"
+        align_stem(raw, converted[key], length_seconds=length, gain_db=gains[key])
     timings["conversion_seconds"] = round(time.time() - started, 1)
+    simple = not parts or set(parts.values()) <= {"A"}
+    sections_used = None
+    if simple:
+        vocal_mix = converted["A"]
+    else:
+        started = time.time()
+        words = arrangement.transcribe_words(vocals, language=language, cache=work / "words.json")
+        timed = arrangement.align_lyrics(lyrics, words, length)
+        spans = arrangement.section_spans(lyrics, timed, length)
+        original = work / "voice-original.wav"
+        align_stem(vocals, original, length_seconds=length)
+        layers = arrangement.plan_layers(spans=spans, parts=parts, converted=converted, original=original)
+        vocal_mix = work / "vocal-mix.wav"
+        arrangement.run_worker({"cmd": "mix", "length": length, "out": str(vocal_mix), "layers": layers})
+        sections_used = [{"label": s["label"], "start": s["start"], "end": s["end"], "mode": parts.get(s["index"], "A")} for s in spans]
+        timings["arrangement_seconds"] = round(time.time() - started, 1)
+        timings["lyric_lines_heard"] = sum(1 for line in timed if line["heard"])
+        timings["lyric_lines"] = len(timed)
+        (output_dir / "lyric-timing.json").write_text(json.dumps(arrangement.lyric_timing(timed), ensure_ascii=False, indent=2), encoding="utf-8")
     mixed = output_dir / "raw.wav"
-    gain = mix_vocals(converted, vocals, instrumental, mixed, vocal_gain_db=vocal_gain_db)
-    align_stem(converted, output_dir / "vocals.wav", length_seconds=probe_duration(instrumental), gain_db=gain)
+    _run([
+        _ffmpeg(), "-y", "-hide_banner", "-loglevel", "error", "-i", str(instrumental), "-i", str(vocal_mix),
+        "-filter_complex",
+        "[0:a]aresample=44100,aformat=channel_layouts=stereo[inst];"
+        f"[1:a]aresample=44100,aformat=channel_layouts=stereo,volume={vocal_gain_db:.2f}dB[vox];"
+        "[inst][vox]amix=inputs=2:duration=first:normalize=0,alimiter=limit=0.95[out]",
+        "-map", "[out]", "-c:a", "pcm_s24le", str(mixed),
+    ], timeout=600)
+    align_stem(vocal_mix, output_dir / "vocals.wav", length_seconds=length, gain_db=vocal_gain_db)
     shutil.copyfile(instrumental, output_dir / "instrumental.wav")
     shutil.rmtree(work, ignore_errors=True)
-    return {"mix": mixed, "vocal_gain_db": gain, **timings}
+    return {"mix": mixed, "vocal_gain_db": gains, "sections": sections_used, **timings}

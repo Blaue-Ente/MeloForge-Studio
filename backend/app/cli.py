@@ -198,6 +198,16 @@ def cmd_sing(args) -> int:
             "master_preset": args.preset}
     started = time.monotonic()
     with _client() as client:
+        if args.voice_b or args.choir:
+            sections = client.get(f"/api/v1/song-sections/{args.song}").json()
+            parts = dict(sections.get("duet_default") or {}) if args.voice_b else {str(s["index"]): "A" for s in sections.get("sections", []) if s["lines"]}
+            if args.choir:
+                for section in sections.get("sections", []):
+                    if section["lines"] and ("chorus" in section["label"].lower() or "припев" in section["label"].lower()):
+                        parts[str(section["index"])] = "choir"
+            body.update(parts=parts)
+            if args.voice_b:
+                body.update(voice_b_id=args.voice_b, semitones_b=args.semitones_b)
         # The in-process client runs the background conversion before returning.
         response = client.post("/api/v1/music/voice-swap", json=body)
         if response.status_code != 200:
@@ -207,7 +217,7 @@ def cmd_sing(args) -> int:
         return _print({"job_id": state["id"], "status": state["status"], "error": state.get("error")}, 1)
     result = state["result"]
     output = {"job_id": state["id"], "seconds": round(time.monotonic() - started, 1), "local_dir": result["local_dir"],
-              "timings": result.get("timings"), "mastering": {k: result["mastering"][k] for k in ("preset", "compliant", "after")}}
+              "timings": result.get("timings"), "sections": result.get("sections"), "mastering": {k: result["mastering"][k] for k in ("preset", "compliant", "after")}}
     if args.out:
         target = Path(args.out)
         target.mkdir(parents=True, exist_ok=True)
@@ -341,6 +351,9 @@ def build_parser() -> argparse.ArgumentParser:
     sing_cmd.add_argument("--song", required=True)
     sing_cmd.add_argument("--voice", required=True)
     sing_cmd.add_argument("--semitones", type=int, default=0)
+    sing_cmd.add_argument("--voice-b", help="Second voice for a duet (verses alternate, choruses together)")
+    sing_cmd.add_argument("--semitones-b", type=int, default=0)
+    sing_cmd.add_argument("--choir", action="store_true", help="Choir on every chorus")
     sing_cmd.add_argument("--quality", choices=["fast", "balanced", "best"], default="balanced")
     sing_cmd.add_argument("--preset", choices=["streaming", "apple", "broadcast"], default="streaming")
     sing_cmd.add_argument("--out")

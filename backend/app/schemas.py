@@ -77,12 +77,27 @@ class ComposeRequest(BaseModel):
     video_job_id: UUID
 
 
+class ElevenLabsKey(BaseModel):
+    key: str = Field(min_length=10, max_length=200)
+
+
+class ElevenLabsImport(BaseModel):
+    voice_id: str = Field(min_length=4, max_length=64, pattern=r"^[A-Za-z0-9_]+$")
+    name: str = Field(default="", max_length=60)
+    language: Literal["bg", "en"] = "bg"
+    consent: bool = False
+
+
 class VoiceSongRequest(BaseModel):
     """Re-sing a finished song in a saved voice profile (local Seed-VC)."""
 
     song_job_id: UUID
     voice_id: str = Field(pattern=r"^[0-9a-f]{32}$")
     semitones: int = Field(default=0, ge=-12, le=12)
+    # Duet / choir: optional second voice and per-section parts {section index: mode}.
+    voice_b_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{32}$")
+    semitones_b: int = Field(default=0, ge=-12, le=12)
+    parts: dict[int, Literal["A", "B", "AB", "choir", "original"]] = Field(default_factory=dict, max_length=40)
     quality: Literal["fast", "balanced", "best"] = "balanced"
     vocal_gain_db: float = Field(default=0.0, ge=-6, le=6)
     master_preset: Literal["streaming", "apple", "broadcast"] = "streaming"
