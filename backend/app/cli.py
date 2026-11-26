@@ -194,6 +194,8 @@ def cmd_voice_add(args) -> int:
 
 
 def cmd_sing(args) -> int:
+    from app.services.arrangement import is_chorus
+
     body = {"song_job_id": args.song, "voice_id": args.voice, "semitones": args.semitones, "quality": args.quality,
             "master_preset": args.preset}
     started = time.monotonic()
@@ -203,7 +205,7 @@ def cmd_sing(args) -> int:
             parts = dict(sections.get("duet_default") or {}) if args.voice_b else {str(s["index"]): "A" for s in sections.get("sections", []) if s["lines"]}
             if args.choir:
                 for section in sections.get("sections", []):
-                    if section["lines"] and ("chorus" in section["label"].lower() or "припев" in section["label"].lower()):
+                    if section["lines"] and is_chorus(section["label"]):
                         parts[str(section["index"])] = "choir"
             body.update(parts=parts)
             if args.voice_b:

@@ -49,7 +49,7 @@ export function VoiceStudio({ song, onCreated }: { song: SongLike; onCreated: (j
   useEffect(() => { setParts(duet ? { ...duetDefault } : Object.fromEntries(sections.map((item) => [String(item.index), "A"]))); }, [duet, duetDefault, sections]);
 
   function choirOnChoruses() {
-    setParts((current) => { const next = { ...current }; sections.forEach((item) => { if (/chorus|припев/i.test(item.label)) next[String(item.index)] = "choir"; }); return next; });
+    setParts((current) => { const next = { ...current }; sections.forEach((item) => { if (/^\s*(chorus|припев|refrain|hook)\b/i.test(item.label)) next[String(item.index)] = "choir"; }); return next; });
   }
 
   async function saveElKey() {

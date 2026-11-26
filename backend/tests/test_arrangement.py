@@ -49,3 +49,8 @@ def test_plan_layers_for_duet_and_choir(tmp_path):
     choir = [layer for layer in layers if "delay_ms" in layer]
     assert len(choir) == 6 and all(layer["segments"] == [(20.0, 30.0)] for layer in choir)
     assert {layer["path"][-5:] for layer in choir} == {"a.wav", "b.wav", "o.wav"}
+
+
+def test_is_chorus_skips_pre_and_post_chorus():
+    assert arrangement.is_chorus("Chorus") and arrangement.is_chorus("Chorus 2") and arrangement.is_chorus("Припев")
+    assert not arrangement.is_chorus("Pre-Chorus") and not arrangement.is_chorus("Post-Chorus") and not arrangement.is_chorus("Verse 1")

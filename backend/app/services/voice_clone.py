@@ -36,6 +36,20 @@ REFERENCE_MAX_SECONDS = 25.0  # Seed-VC's prompt window; longer clips only add c
 MAX_UPLOAD_BYTES = 40 * 1024 * 1024
 _SAFE_ID = re.compile(r"^[0-9a-f]{32}$")
 QUALITY_STEPS = {"fast": 15, "balanced": 30, "best": 50}
+# Runs Seed-VC's inference.py with the BigVGAN vocoder under fp16 autocast. On a
+# 4 GB RTX 2050 the fp32 vocoder dominated (RTF 9.1 -> 3.2 for the whole run).
+_SEEDVC_DRIVER = """
+import runpy, sys, torch
+from modules.bigvgan import bigvgan
+_orig = bigvgan.BigVGAN.forward
+def _fp16(self, x):
+    with torch.autocast('cuda', dtype=torch.float16):
+        return _orig(self, x).float()
+if torch.cuda.is_available():
+    bigvgan.BigVGAN.forward = _fp16
+sys.argv = ['inference.py'] + sys.argv[1:]
+runpy.run_path('inference.py', run_name='__main__')
+"""
 
 
 class VoiceCloneError(RuntimeError):
@@ -231,11 +245,11 @@ def convert_vocals(vocals: Path, reference: Path, workdir: Path, *, semitones: i
     if out.exists():
         shutil.rmtree(out)
     _run([
-        str(engine_python()), "inference.py", "--source", str(vocals), "--target", str(reference),
+        str(engine_python()), "-c", _SEEDVC_DRIVER, "--source", str(vocals), "--target", str(reference),
         "--output", str(out), "--diffusion-steps", str(QUALITY_STEPS.get(quality, 30)),
         "--length-adjust", "1.0", "--inference-cfg-rate", "0.7", "--f0-condition", "True",
         "--auto-f0-adjust", "False", "--semi-tone-shift", str(int(semitones)), "--fp16", "True",
-    ], cwd=engine_dir(), env=_engine_env(), timeout=3600)
+    ], cwd=engine_dir(), env=_engine_env(), timeout=max(3600, int(probe_duration(vocals) * 60)))
     produced = sorted(out.glob("vc_*.wav"))
     if not produced:
         raise VoiceCloneError("Seed-VC produced no output")

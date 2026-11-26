@@ -19,9 +19,11 @@
 - [x] Music video through Atelier (estimate → confirm → progress → MP4) from the UI and `clip` CLI; storyboard/cuts live in Atelier
 - [x] Sing in my own voice: Demucs stems + Seed-VC zero-shot singing conversion, consent-gated voice profiles, `voices`/`voice-add`/`sing` CLI
 - [x] Library of finished songs in `Music\MeloForge\<Title>` (MP3, WAV, lyrics, stems, info, clips) + „Отвори папката“
-- [ ] More voices: ElevenLabs voice library / cloned voices as conversion targets (paid, quoted first)
-- [ ] Second voice and duets: assign verses/lines to voice A or B (per-section conversion of the lead stem)
-- [ ] Choir / backing vocals: layered conversions of the chorus with small pitch/timing variation
+- [x] ElevenLabs voices as singing targets (account voices → ~250-char sample → local Seed-VC)
+- [x] Duets: per-section voice A / B / both / original, sections found by Whisper lyric alignment
+- [x] Choir: detuned, delayed, panned doublings of the available voices on chosen sections
+- [x] fp16 BigVGAN vocoder (RTF 9.1 → 3.2 on RTX 2050); duet + choir of a 2:30 song in ~12 min
+- [ ] Per-line duet assignment and real harmony (third/fifth) for the choir
 - [ ] Faster voice conversion on 4 GB GPUs (fewer diffusion steps, chunked fp16) and optional fine-tuned personal voice model
 - [x] Agent CLI (`python -m app.cli`) and song history API
 - [ ] VoxCPM voice-over adapter (not a singing engine)

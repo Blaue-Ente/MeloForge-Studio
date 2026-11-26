@@ -193,6 +193,11 @@ def lyric_timing(timed: list[dict]) -> list[dict]:
 
 # ------------------------------------------------------------------ arrangement
 
+def is_chorus(label: str) -> bool:
+    """[Chorus], [Chorus 2], [Припев] — but not [Pre-Chorus] / [Post-Chorus]."""
+    return bool(re.match(r"^\s*(chorus|припев|refrain|hook)\b", label.strip().lower()))
+
+
 def default_parts(sections: list[dict], *, duet: bool) -> dict[int, str]:
     """Sensible duet: A sings odd verses, B even verses, both on choruses; choir only if asked."""
     parts = {}
@@ -203,7 +208,7 @@ def default_parts(sections: list[dict], *, duet: bool) -> dict[int, str]:
             continue
         if not duet:
             parts[section["index"]] = "A"
-        elif "chorus" in label or "припев" in label:
+        elif is_chorus(section["label"]):
             parts[section["index"]] = "AB"
         elif "verse" in label or "куплет" in label:
             verse_count += 1
