@@ -24,7 +24,8 @@ def test_eta_from_measured_fraction(monkeypatch, tmp_path):
     jobs.update(job.id, status="running")
     progress.record(job.id, 0.5, "Generating music...")
     est = progress.estimate(jobs.get(job.id))
-    assert est["pct"] == 50.0 and est["stage_label"] == "Композиране" and 60 <= est["eta_seconds"] <= 140
+    # Songs use the learned pace: 45 s set-up + 60 s x 3.0 + 25 s mastering = 250 s, 100 s elapsed.
+    assert est["pct"] == 40.0 and est["stage_label"] == "Композиране" and 148 <= est["eta_seconds"] <= 152
 
 
 def test_eta_before_progress_uses_learned_pace(monkeypatch, tmp_path):
@@ -34,8 +35,8 @@ def test_eta_before_progress_uses_learned_pace(monkeypatch, tmp_path):
     job = jobs.create("song", {"duration_seconds": 50, "started_at": _ago(10)}, 0)
     jobs.update(job.id, status="queued")
     est = progress.estimate(jobs.get(job.id))
-    # 50 s of music at 4 s/s + 25 s mastering - 10 s elapsed
-    assert 210 <= est["eta_seconds"] <= 220 and est["stage_label"] == "В опашката"
+    # pace (400-45)/100 = 3.55 s/s: 45 + 50 x 3.55 + 25 - 10 s elapsed = 237.5 s
+    assert 235 <= est["eta_seconds"] <= 240 and est["stage_label"] == "В опашката"
     assert progress.estimate(jobs.get(done.id)) is None
 
 
