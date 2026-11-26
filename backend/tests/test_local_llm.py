@@ -45,3 +45,28 @@ def test_story_reaches_the_lyrics_prompt():
     messages = lyrics_writer_messages(prompt="pop", genre="Поп", mood="", language="bg", duration_seconds=90,
                                       story="За баба Пенка от Враца")
     assert "За баба Пенка от Враца" in messages[1]["content"]
+
+
+def test_openrouter_save_fills_live_prices(monkeypatch):
+    import asyncio
+
+    from app import main
+    from app.schemas import ProviderConfigUpdate
+    from app.services import openrouter_catalog
+
+    saved = {}
+    for field in ("openrouter_api_key", "openrouter_model", "openrouter_input_usd_per_1m", "openrouter_output_usd_per_1m"):
+        monkeypatch.setattr(main.settings, field, getattr(main.settings, field))  # restored after the test
+    monkeypatch.setattr(openrouter_catalog, "price", lambda model: {"name": model, "input_usd_per_1m": 0.1, "output_usd_per_1m": 0.5} if model == "anthropic/claude-haiku-5.5" else None)
+    monkeypatch.setattr(main, "store_secret", lambda name, value: saved.update(name=name))
+    monkeypatch.setattr(main, "update_provider_preferences", lambda settings, provider, values: saved.update(values=values))
+    result = asyncio.run(main.configure_provider(ProviderConfigUpdate(provider="openrouter", api_key="sk-or-123456789", model="anthropic/claude-haiku-5.5")))
+    assert saved["values"]["openrouter_input_usd_per_1m"] == 0.1 and saved["values"]["openrouter_output_usd_per_1m"] == 0.5
+    assert result["api_key_stored"] is True
+
+    import pytest
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(main.configure_provider(ProviderConfigUpdate(provider="openrouter", api_key="sk-or-123456789", model="no/such-model")))
+    assert error.value.status_code == 400

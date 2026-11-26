@@ -29,7 +29,15 @@ from app.schemas import (
     VisualizerRequest,
     VoiceSongRequest,
 )
-from app.services import atelier, elevenlabs, jobs, library, local_llm, voice_clone
+from app.services import (
+    atelier,
+    elevenlabs,
+    jobs,
+    library,
+    local_llm,
+    openrouter_catalog,
+    voice_clone,
+)
 from app.services.ace_step import AceStepConfig
 from app.services.ace_step import list_models as ace_step_models
 from app.services.ace_step import song_status as ace_step_song_status
@@ -106,8 +114,26 @@ async def update_settings(payload: RuntimeSettingsUpdate):
     return update_runtime_preferences(settings, payload.model_dump(exclude_none=True))
 
 
+@app.get("/api/v1/providers/openrouter/models")
+async def openrouter_models():
+    """Recommended OpenRouter models with live prices (public catalog, no key sent)."""
+    try:
+        return {"models": await asyncio.to_thread(openrouter_catalog.recommended)}
+    except Exception:
+        raise HTTPException(503, "Каталогът на OpenRouter не се зареди. Провери интернет връзката.")
+
+
 @app.post("/api/v1/providers/configure")
 async def configure_provider(payload: ProviderConfigUpdate):
+    if payload.provider == "openrouter" and not (payload.input_usd_per_1m and payload.output_usd_per_1m):
+        # Fill in the real prices so the budget guard can allow the requests.
+        try:
+            info = await asyncio.to_thread(openrouter_catalog.price, payload.model.strip())
+        except Exception:
+            info = None
+        if not info:
+            raise HTTPException(400, f"Моделът „{payload.model.strip()}“ не е намерен в каталога на OpenRouter. Избери от списъка.")
+        payload.input_usd_per_1m, payload.output_usd_per_1m = info["input_usd_per_1m"], info["output_usd_per_1m"]
     try:
         store_secret(payload.provider, payload.api_key.strip())
     except (OSError, RuntimeError, ValueError):
@@ -297,7 +323,10 @@ async def draft_lyrics(request: LyricsDraftRequest):
     """Draft ACE-Step-tagged lyrics with the routed LLM (local first, budget-gated cloud)."""
     await asyncio.to_thread(local_llm.auto_enable, settings)
     messages = lyrics_writer_messages(prompt=request.prompt, genre=request.genre, mood=request.mood, language=request.language, duration_seconds=request.duration_seconds, title=request.title, themes=request.themes, structure=request.structure, lyric_style=request.lyric_style, story=request.story)
-    chat_request = ChatRequest(messages=messages, provider=request.provider, max_output_tokens=min(2048, 300 + request.duration_seconds * 6), max_cost_usd=request.max_cost_usd)
+    # Song text quality matters and a cloud draft costs about a tenth of a cent: when a cloud model
+    # is connected, lyrics use it even in local-first mode (unless a provider is picked explicitly).
+    lyrics_mode = "cloud_quality" if not request.provider and local_llm.cloud_configured(settings) else None
+    chat_request = ChatRequest(messages=messages, provider=request.provider, mode=lyrics_mode, max_output_tokens=min(2048, 300 + request.duration_seconds * 6), max_cost_usd=request.max_cost_usd)
     try:
         selected, decision = choose_provider(chat_request, settings)
         if selected.kind == "local":
