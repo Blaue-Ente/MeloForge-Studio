@@ -58,6 +58,7 @@ def test_openrouter_save_fills_live_prices(monkeypatch):
     for field in ("openrouter_api_key", "openrouter_model", "openrouter_input_usd_per_1m", "openrouter_output_usd_per_1m"):
         monkeypatch.setattr(main.settings, field, getattr(main.settings, field))  # restored after the test
     monkeypatch.setattr(openrouter_catalog, "price", lambda model: {"name": model, "input_usd_per_1m": 0.1, "output_usd_per_1m": 0.5} if model == "anthropic/claude-haiku-5.5" else None)
+    monkeypatch.setattr(openrouter_catalog, "check_key", lambda key: {"ok": key != "sk-or-badbadbad"})
     monkeypatch.setattr(main, "store_secret", lambda name, value: saved.update(name=name))
     monkeypatch.setattr(main, "update_provider_preferences", lambda settings, provider, values: saved.update(values=values))
     result = asyncio.run(main.configure_provider(ProviderConfigUpdate(provider="openrouter", api_key="sk-or-123456789", model="anthropic/claude-haiku-5.5")))
@@ -70,6 +71,9 @@ def test_openrouter_save_fills_live_prices(monkeypatch):
     with pytest.raises(HTTPException) as error:
         asyncio.run(main.configure_provider(ProviderConfigUpdate(provider="openrouter", api_key="sk-or-123456789", model="no/such-model")))
     assert error.value.status_code == 400
+    with pytest.raises(HTTPException) as bad_key:
+        asyncio.run(main.configure_provider(ProviderConfigUpdate(provider="openrouter", api_key="sk-or-badbadbad", model="anthropic/claude-haiku-5.5")))
+    assert bad_key.value.status_code == 400 and "401" in bad_key.value.detail
 
 
 def test_openrouter_offers_newest_model_per_family():

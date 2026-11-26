@@ -83,3 +83,17 @@ def recommended() -> list[dict]:
 
 def price(model_id: str) -> dict | None:
     return catalog().get(model_id)
+
+
+def check_key(api_key: str, timeout: float = 15) -> dict:
+    """Validate a key with OpenRouter's free /key endpoint. Returns {ok, label, limit_remaining} or {ok: False}."""
+    try:
+        response = httpx.get("https://openrouter.ai/api/v1/key", headers={"Authorization": f"Bearer {api_key}"}, timeout=timeout)
+    except httpx.HTTPError:
+        return {"ok": None, "reason": "network"}
+    if response.status_code in {401, 403}:
+        return {"ok": False, "reason": "invalid"}
+    if response.status_code >= 400:
+        return {"ok": None, "reason": f"http_{response.status_code}"}
+    data = (response.json() or {}).get("data") or {}
+    return {"ok": True, "limit_remaining": data.get("limit_remaining"), "usage": data.get("usage"), "is_free_tier": data.get("is_free_tier")}

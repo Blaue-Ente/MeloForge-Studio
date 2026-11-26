@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
+import httpx
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -123,8 +124,20 @@ async def openrouter_models():
         raise HTTPException(503, "Каталогът на OpenRouter не се зареди. Провери интернет връзката.")
 
 
+@app.get("/api/v1/providers/openrouter/check")
+async def openrouter_check():
+    """Is the stored OpenRouter key accepted? (free call, no tokens used)."""
+    if not settings.openrouter_api_key:
+        return {"ok": False, "reason": "missing"}
+    return await asyncio.to_thread(openrouter_catalog.check_key, settings.openrouter_api_key)
+
+
 @app.post("/api/v1/providers/configure")
 async def configure_provider(payload: ProviderConfigUpdate):
+    if payload.provider == "openrouter":
+        checked = await asyncio.to_thread(openrouter_catalog.check_key, payload.api_key.strip())
+        if checked.get("ok") is False:
+            raise HTTPException(400, "OpenRouter не прие този ключ (401). Копирай целия ключ отново от openrouter.ai → Keys; започва с sk-or-.")
     if payload.provider == "openrouter" and not (payload.input_usd_per_1m and payload.output_usd_per_1m):
         # Fill in the real prices so the budget guard can allow the requests.
         try:
@@ -340,6 +353,13 @@ async def draft_lyrics(request: LyricsDraftRequest):
         result = await create_chat_completion(selected, messages, chat_request.max_output_tokens)
     except RoutingError as exc:
         raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": exc.message}) from exc
+    except httpx.HTTPStatusError as exc:
+        logger.error("Lyrics draft failed (%s: %s)", type(exc).__name__, str(exc)[:300])
+        code = exc.response.status_code
+        message = {401: "Облачният ключ е невалиден (401). Запиши го отново в „Настройки и AI модели“.",
+                   402: "Кредитите в облачния акаунт са свършили (402). Зареди OpenRouter или ползвай локалния модел.",
+                   429: "Облачният модел е претоварен или лимитът е достигнат (429). Опитай след минута."}.get(code, f"AI доставчикът върна грешка {code}. Опитай пак или избери друг модел.")
+        raise HTTPException(502, {"code": f"provider_http_{code}", "message": message})
     except Exception as exc:
         logger.error("Lyrics draft failed (%s: %s)", type(exc).__name__, str(exc)[:300])
         raise HTTPException(502, {"code": "provider_error", "message": "AI моделът не върна текст. Опитай пак след малко или избери друг модел."})
