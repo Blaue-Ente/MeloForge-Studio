@@ -70,3 +70,19 @@ def test_openrouter_save_fills_live_prices(monkeypatch):
     with pytest.raises(HTTPException) as error:
         asyncio.run(main.configure_provider(ProviderConfigUpdate(provider="openrouter", api_key="sk-or-123456789", model="no/such-model")))
     assert error.value.status_code == 400
+
+
+def test_openrouter_offers_newest_model_per_family():
+    from app.services import openrouter_catalog as c
+
+    def m(created, out=1.0):
+        return {"name": "x", "created": created, "input_usd_per_1m": 0.1, "output_usd_per_1m": out}
+
+    models = {"openai/gpt-5.6-luna": m(1), "openai/gpt-6-luna": m(3), "openai/gpt-6-luna:batch": m(4),
+              "google/gemini-3.8-flash": m(2), "google/gemini-3.1-flash-image": m(9), "qwen/qwen4-max": m(5),
+              "mistralai/mistral-large-4-0": m(6), "z-ai/glm-5.3-flashx-legal": m(7), "deepseek/deepseek-v4.1-flash": m(8, out=0)}
+    picked = {item["id"]: item["group"] for item in c.newest_per_family(models)}
+    assert "openai/gpt-6-luna" in picked and "openai/gpt-5.6-luna" not in picked and "openai/gpt-6-luna:batch" not in picked
+    assert picked["google/gemini-3.8-flash"] == "Google Gemini" and "google/gemini-3.1-flash-image" not in picked
+    assert picked["qwen/qwen4-max"] == "Китайски" and picked["mistralai/mistral-large-4-0"] == "Европейски"
+    assert "z-ai/glm-5.3-flashx-legal" not in picked and "deepseek/deepseek-v4.1-flash" not in picked  # no free/zero-priced
