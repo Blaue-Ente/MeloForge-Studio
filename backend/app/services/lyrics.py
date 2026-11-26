@@ -92,6 +92,11 @@ def lyrics_writer_messages(
         "[Verse 2], [Bridge], [Outro]. Keep lines short (4-9 syllables per line is ideal), "
         "use consistent meter and rhyme, repeat the chorus verbatim. "
         "First line: 'Title: <a short song title, 1-5 words, in the lyrics language>'. "
+        "Second line: 'Style: <the sound for the music engine as short ENGLISH comma-separated tags, max 35 words: "
+        "genre, key instruments, vocal type, tempo/energy; translate any non-English style wishes>'. "
+        "Turn wishes about the song's shape (calm start, wild middle, brass ending, a rapped or shouted line, "
+        "an extra pre-chorus) into the section structure and short tag hints such as [Intro - calm accordion] "
+        "or [Outro - festive brass]; put shouted or chanted phrases into the lyrics where they belong. "
         "Then ONLY the lyrics with tags: no explanations, no markdown."
     )
     user = (
@@ -122,13 +127,22 @@ def extract_title(text: str) -> str:
     return ""
 
 
+def extract_style(text: str) -> str:
+    """The 'Style: …' line with English ACE-Step tags (empty when missing)."""
+    for line in text.splitlines()[:8]:
+        match = re.match(r"^\W*(?:style|стил)\s*:\s*(.+?)\s*$", line.strip(), re.I)
+        if match:
+            return match.group(1).strip().strip('"')[:400]
+    return ""
+
+
 def clean_generated_lyrics(text: str) -> str:
     """Strip markdown fences, headings and chatter that LLMs sometimes add."""
     cleaned = re.sub(r"```[a-z]*", "", text).replace("```", "")
     lines = []
     for line in cleaned.splitlines():
         stripped = line.strip().strip("*_").strip()
-        if re.match(r"^(title|заглавие)\s*:", stripped, re.I) or stripped.startswith("#"):
+        if re.match(r"^(title|заглавие|style|стил)\s*:", stripped, re.I) or stripped.startswith("#"):
             continue
         lines.append(stripped)
     # One blank line before every section tag keeps the text readable and editable.

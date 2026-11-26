@@ -31,6 +31,7 @@ export function FastMode({ apiOnline, onOpenStudio }: { apiOnline: boolean; onOp
   const [language, setLanguage] = useState<"bg" | "en">("bg");
   const [title, setTitle] = useState("");
   const [lyrics, setLyrics] = useState("");
+  const [style, setStyle] = useState("");
   const [textAi, setTextAi] = useState<TextAi | null>(null);
   const [voices, setVoices] = useState<Voice[]>([]);
   const [singer, setSinger] = useState("male");
@@ -74,11 +75,12 @@ export function FastMode({ apiOnline, onOpenStudio }: { apiOnline: boolean; onOp
   async function writeLyrics() {
     setBusy("lyrics"); setError(""); setNote("");
     try {
-      const data = await post<{ lyrics: string; title?: string; provider: string; model: string; warnings: string[] }>("/api/v1/music/lyrics", {
+      const data = await post<{ lyrics: string; title?: string; style?: string; provider: string; model: string; warnings: string[] }>("/api/v1/music/lyrics", {
         prompt: `${genre?.caption || ""}`.trim() || "song", story, genre: genre?.label || "", mood: genre?.mood || "", language, duration_seconds: length,
       });
       setLyrics(data.lyrics);
       if (data.title && !title.trim()) setTitle(data.title);
+      setStyle(data.style || "");
       setNote(`${data.warnings?.length ? `⚠ ${data.warnings.join(" ")} ` : ""}Написан от ${data.provider === "ollama" ? `локалния модел ${data.model} (безплатно)` : `${data.provider} · ${data.model}`}. Можеш да го промениш свободно.`);
     } catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)); }
     finally { setBusy(""); }
@@ -96,7 +98,7 @@ export function FastMode({ apiOnline, onOpenStudio }: { apiOnline: boolean; onOp
     const vocal = singer === "female" ? "female lead vocal" : "male lead vocal";
     try {
       const quote = await post<Job>("/api/v1/jobs/song/quote", {
-        title: title.trim() || story.split(/[.!?\n]/)[0].split(/\s+/).slice(0, 5).join(" "), prompt: `${genre?.caption || "song"}, ${vocal}`, genre: genre?.label || "",
+        title: title.trim() || story.split(/[.!?\n]/)[0].split(/\s+/).slice(0, 5).join(" "), prompt: `${style || genre?.caption || "song"}, ${vocal}`, genre: genre?.label || "",
         mood: genre?.mood || "", language, duration_seconds: length, lyrics, instrumental: false, master_preset: "streaming",
       });
       if (quote.quote_usd > 0) { setSong(quote); setStep(3); return; }  // paid engine: show the price and wait for a click

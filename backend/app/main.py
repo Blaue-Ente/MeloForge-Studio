@@ -47,6 +47,7 @@ from app.services.composer import compose_song_video, lyrics_path, output_path
 from app.services.hardware import get_hardware_status, local_tool_status
 from app.services.lyrics import (
     clean_generated_lyrics,
+    extract_style,
     extract_title,
     lyric_warnings,
     lyrics_writer_messages,
@@ -391,12 +392,13 @@ async def draft_lyrics(request: LyricsDraftRequest):
         await asyncio.to_thread(local_llm.unload_all, settings.local_llm_base_url)
     lyrics = clean_generated_lyrics(result.get("content") or "")
     suggested_title = extract_title(result.get("content") or "")
+    suggested_style = extract_style(result.get("content") or "")
     if not lyrics:
         raise HTTPException(502, {"code": "empty_lyrics", "message": f"Моделът {selected.model} не върна текст (най-вероятно е „мислещ“ модел и изразходва лимита). Избери Claude Haiku или GPT Luna в настройките."})
     warnings = lyric_warnings(lyrics, request.duration_seconds)
     if fallback_warning:
         warnings = [fallback_warning, *warnings]
-    return {"lyrics": lyrics, "title": suggested_title, "provider": selected.name, "model": selected.model, "estimated_cost_usd": decision["estimated_cost_usd"], "warnings": warnings, "fallback": bool(fallback_warning)}
+    return {"lyrics": lyrics, "title": suggested_title, "style": suggested_style, "provider": selected.name, "model": selected.model, "estimated_cost_usd": decision["estimated_cost_usd"], "warnings": warnings, "fallback": bool(fallback_warning)}
 
 @app.get("/api/v1/text-ai/status")
 async def text_ai_status():

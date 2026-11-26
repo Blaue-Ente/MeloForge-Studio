@@ -145,7 +145,8 @@ function MusicStudio({ apiOnline }: { apiOnline: boolean }) {
       const data = await response.json();
       if (!response.ok) throw new Error(errorText(data, "Текстът не беше генериран."));
       setLyrics(data.lyrics); setInstrumental(false); if (data.title && !title.trim()) setTitle(data.title);
-      setLyricsNotice(`Текст от ${data.provider} · ${data.model}${data.estimated_cost_usd ? ` · ~$${Number(data.estimated_cost_usd).toFixed(4)}` : " · $0"}. Прегледай и редактирай преди генериране.`);
+      if (data.style && /[а-яА-Я]/.test(prompt)) { setPrompt(data.style); }
+      setLyricsNotice(`${data.style && /[а-яА-Я]/.test(prompt) ? "Стилът е преведен на кратки английски тагове за ACE-Step, а желанията за структурата са вкарани в текста. " : ""}Текст от ${data.provider} · ${data.model}${data.estimated_cost_usd ? ` · ~$${Number(data.estimated_cost_usd).toFixed(4)}` : " · $0"}. Прегледай и редактирай преди генериране.`);
     } catch (caught) { setLyricsNotice(caught instanceof Error ? caught.message : "Текстът не беше генериран."); }
     finally { setLyricsBusy(false); }
   }
