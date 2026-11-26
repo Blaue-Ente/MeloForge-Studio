@@ -59,6 +59,10 @@ async def create_chat_completion(spec: ProviderSpec, messages: list[dict[str, st
     if spec.name == "openrouter":
         headers["X-Title"] = "MeloForge Studio"
     payload = {"model": spec.model, "messages": messages, "max_tokens": max_tokens, "stream": False}
+    if spec.name == "openrouter":
+        # Reasoning models (Gemini 4, GPT-6 Sol...) otherwise spend the whole token budget
+        # thinking and return empty content; song lyrics need little reasoning.
+        payload["reasoning"] = {"effort": "low", "exclude": True}
     # Local models on a laptop CPU/GPU can need several minutes for a full song text.
     read_timeout = 420.0 if spec.kind == "local" else 120.0
     async with httpx.AsyncClient(timeout=httpx.Timeout(read_timeout, connect=15.0)) as client:
@@ -69,7 +73,8 @@ async def create_chat_completion(spec: ProviderSpec, messages: list[dict[str, st
     if not choices:
         raise ValueError("Provider returned no choices")
     message = choices[0].get("message") or {}
-    return {"content": message.get("content") or "", "usage": data.get("usage") or {}, "provider_response_id": data.get("id")}
+    return {"content": message.get("content") or "", "usage": data.get("usage") or {}, "provider_response_id": data.get("id"),
+            "finish_reason": choices[0].get("finish_reason")}
 
 
 async def novita_create_video(settings: Settings, request_data: dict) -> dict:

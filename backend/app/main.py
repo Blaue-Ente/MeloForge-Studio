@@ -345,7 +345,7 @@ async def draft_lyrics(request: LyricsDraftRequest):
     # Song text quality matters and a cloud draft costs about a tenth of a cent: when a cloud model
     # is connected, lyrics use it even in local-first mode (unless a provider is picked explicitly).
     lyrics_mode = "cloud_quality" if not request.provider and local_llm.cloud_configured(settings) else None
-    chat_request = ChatRequest(messages=messages, provider=request.provider, mode=lyrics_mode, max_output_tokens=min(2048, 300 + request.duration_seconds * 6), max_cost_usd=request.max_cost_usd)
+    chat_request = ChatRequest(messages=messages, provider=request.provider, mode=lyrics_mode, max_output_tokens=min(6000, 2500 + request.duration_seconds * 8), max_cost_usd=request.max_cost_usd)
     try:
         selected, decision = choose_provider(chat_request, settings)
         if selected.kind == "local":
@@ -357,6 +357,10 @@ async def draft_lyrics(request: LyricsDraftRequest):
             if fitting and fitting != selected.model:
                 selected = dataclasses.replace(selected, model=fitting)
         result = await create_chat_completion(selected, messages, chat_request.max_output_tokens)
+        if not (result.get("content") or "").strip() and selected.kind == "cloud":
+            # Reasoning ran out of tokens: one retry with a larger budget.
+            logger.warning("Empty lyrics from %s (%s); retrying once", selected.model, result.get("finish_reason"))
+            result = await create_chat_completion(selected, messages, min(12000, chat_request.max_output_tokens * 2))
     except RoutingError as exc:
         raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": exc.message}) from exc
     except httpx.HTTPStatusError as exc:
@@ -388,7 +392,7 @@ async def draft_lyrics(request: LyricsDraftRequest):
     lyrics = clean_generated_lyrics(result.get("content") or "")
     suggested_title = extract_title(result.get("content") or "")
     if not lyrics:
-        raise HTTPException(502, {"code": "empty_lyrics", "message": "Моделът върна празен текст."})
+        raise HTTPException(502, {"code": "empty_lyrics", "message": f"Моделът {selected.model} не върна текст (най-вероятно е „мислещ“ модел и изразходва лимита). Избери Claude Haiku или GPT Luna в настройките."})
     warnings = lyric_warnings(lyrics, request.duration_seconds)
     if fallback_warning:
         warnings = [fallback_warning, *warnings]
