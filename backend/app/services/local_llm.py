@@ -91,3 +91,33 @@ def status(settings: Settings) -> dict:
         "cloud_configured": cloud_configured(settings),
         "free_ram_gb": free_ram_gb(),
     }
+
+
+def _root(base_url: str) -> str:
+    root = base_url.rstrip("/")
+    return root[:-3] if root.endswith("/v1") else root
+
+
+def unload_all(base_url: str, timeout: float = 10) -> list[str]:
+    """Free the GPU: ask Ollama to unload every loaded model now (keep_alive=0).
+
+    Ollama keeps a model in VRAM for 5 minutes after a request; on a 4 GB card that
+    pushes ACE-Step's VAE decode to the CPU and a 1-minute song takes 20+ minutes.
+    """
+    try:
+        loaded = httpx.get(_root(base_url) + "/api/ps", timeout=timeout).json().get("models", [])
+    except (httpx.HTTPError, ValueError):
+        return []
+    unloaded = []
+    for item in loaded:
+        name = item.get("name") or item.get("model")
+        if not name:
+            continue
+        try:
+            httpx.post(_root(base_url) + "/api/generate", json={"model": name, "keep_alive": 0}, timeout=timeout)
+            unloaded.append(name)
+        except httpx.HTTPError:
+            continue
+    if unloaded:
+        logger.info("Unloaded Ollama models from VRAM: %s", ", ".join(unloaded))
+    return unloaded

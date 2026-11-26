@@ -13,3 +13,4 @@ def _no_real_ollama(monkeypatch):
     from app.services import local_llm
 
     monkeypatch.setattr(local_llm, "list_models", lambda *args, **kwargs: None)
+    monkeypatch.setattr(local_llm, "unload_all", lambda *args, **kwargs: [])

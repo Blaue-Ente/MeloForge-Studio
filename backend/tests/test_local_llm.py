@@ -117,3 +117,18 @@ def test_lyrics_fall_back_to_local_when_cloud_key_is_rejected(monkeypatch):
     data = asyncio.run(main.draft_lyrics(LyricsDraftRequest(prompt="pop song", language="bg", duration_seconds=60)))
     assert calls == ["openrouter", "ollama"] and data["provider"] == "ollama" and data["fallback"] is True
     assert "401" in data["warnings"][0] and data["title"] == "Тест"
+
+
+def test_unload_all_sends_keep_alive_zero(monkeypatch):
+    # conftest stubs unload_all; reload the real function from source for this test.
+    import importlib
+
+    import httpx
+
+    from app.services import local_llm as module
+    real = importlib.reload(module)
+    posted = []
+    monkeypatch.setattr(real.httpx, "get", lambda url, timeout: httpx.Response(200, json={"models": [{"name": "qwen2.5:3b"}]}, request=httpx.Request("GET", url)))
+    monkeypatch.setattr(real.httpx, "post", lambda url, json, timeout: posted.append((url, json)) or httpx.Response(200, request=httpx.Request("POST", url)))
+    assert real.unload_all("http://127.0.0.1:11434/v1") == ["qwen2.5:3b"]
+    assert posted == [("http://127.0.0.1:11434/api/generate", {"model": "qwen2.5:3b", "keep_alive": 0})]

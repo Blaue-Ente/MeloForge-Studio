@@ -382,6 +382,9 @@ async def draft_lyrics(request: LyricsDraftRequest):
         raise HTTPException(502, {"code": "provider_error", "message": "AI моделът не върна текст. Опитай пак след малко или избери друг модел."})
     else:
         fallback_warning = None
+    if selected.kind == "local":
+        # Free the VRAM right away so the song generation that usually follows runs on the GPU.
+        await asyncio.to_thread(local_llm.unload_all, settings.local_llm_base_url)
     lyrics = clean_generated_lyrics(result.get("content") or "")
     suggested_title = extract_title(result.get("content") or "")
     if not lyrics:
@@ -533,6 +536,9 @@ async def confirm_job(job_id: str):
             request_data = job.payload.copy()
             model = request_data.pop("_ace_step_model", settings.ace_step_model)
             provider_payload = build_ace_step_payload(request_data, model, lm_enabled=settings.ace_step_lm_enabled)
+            # Local ACE-Step needs the whole (small) GPU: drop any idle Ollama model first.
+            if urlparse(settings.ace_step_base_url).hostname in {"127.0.0.1", "localhost", "::1"}:
+                await asyncio.to_thread(local_llm.unload_all, settings.local_llm_base_url)
             provider_result = await ace_step_submit_song(_ace_step_config(), provider_payload)
             updated_payload = {**request_data, "model": model}
             return jobs.update(job.id, status="running", provider_task_id=provider_result["task_id"], payload=updated_payload)
@@ -845,6 +851,7 @@ async def create_voice_song(request: VoiceSongRequest, background_tasks: Backgro
     # No provider_task_id: the status poller leaves this job to the background worker.
     jobs.update(job.id, status="running")
     _voice_running.add(job.id)
+    await asyncio.to_thread(local_llm.unload_all, settings.local_llm_base_url)  # Seed-VC needs the GPU
     background_tasks.add_task(_run_voice_song, job.id, source.id, voice, voice_b)
     return jobs.get(job.id)
 
