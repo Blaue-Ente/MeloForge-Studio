@@ -151,7 +151,7 @@ def library_dir_for(job_id: str) -> Path | None:
 
 def open_in_explorer(path: Path) -> None:
     if sys.platform == "win32":
-        os.startfile(str(path))  # noqa: S606 - opens the user's own folder in Explorer
+        os.startfile(str(path))
     else:
         import subprocess
 

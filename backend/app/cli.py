@@ -12,7 +12,7 @@ agent can create a song end to end:
     python -m app.cli voices
     python -m app.cli voice-add me.wav --name "My voice" --i-own-this-voice
     python -m app.cli sing --song <song job id> --voice <voice id> --semitones 0 --out ./out
-    python -m app.cli library                       (copy finished songs to Music\MeloForge)
+    python -m app.cli library                       (copy finished songs to Music\\MeloForge)
     python -m app.cli export-song <song job id> --to ./package      (meloforge.song/1 for Atelier)
     python -m app.cli clip <song job id> --mode stills --local-only  (Atelier music video; --confirm to start)
 

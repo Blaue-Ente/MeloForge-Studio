@@ -4,7 +4,7 @@ import json
 import os
 import threading
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -31,7 +31,7 @@ def _path(job_id: str) -> Path:
 
 
 def create(kind: str, payload: dict, quote_usd: float) -> Job:
-    job = Job(str(uuid4()), kind, "awaiting_confirmation", quote_usd, payload, datetime.now(timezone.utc).isoformat())
+    job = Job(str(uuid4()), kind, "awaiting_confirmation", quote_usd, payload, datetime.now(UTC).isoformat())
     return save(job)
 
 

@@ -9,7 +9,7 @@ music), with safe defaults for a 4 GB laptop GPU.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from statistics import median
 
 from app.services import jobs
@@ -58,14 +58,14 @@ def ace_step_fraction(raw: float) -> float:
 
 
 def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _seconds_since(iso: str | None) -> float | None:
     if not iso:
         return None
     try:
-        return (datetime.now(timezone.utc) - datetime.fromisoformat(iso)).total_seconds()
+        return (datetime.now(UTC) - datetime.fromisoformat(iso)).total_seconds()
     except ValueError:
         return None
 

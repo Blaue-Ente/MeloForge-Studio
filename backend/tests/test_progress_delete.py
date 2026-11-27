@@ -2,7 +2,7 @@ import asyncio
 import json
 import shutil
 import subprocess
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi import HTTPException
@@ -15,7 +15,7 @@ needs_ffmpeg = pytest.mark.skipif(not shutil.which("ffmpeg"), reason="FFmpeg req
 
 
 def _ago(seconds):
-    return (datetime.now(timezone.utc) - timedelta(seconds=seconds)).isoformat()
+    return (datetime.now(UTC) - timedelta(seconds=seconds)).isoformat()
 
 
 def test_eta_from_measured_fraction(monkeypatch, tmp_path):
